@@ -18,7 +18,7 @@
 
 {#if verified || blue}
   <span class="badge" {title} aria-label={title}>
-    <Icon name="verified" {size} filled />
+    <Icon name="verified" {size} />
   </span>
 {/if}
 

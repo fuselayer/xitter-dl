@@ -9,7 +9,6 @@
   import {
     applyTheme,
     loadThemeChoice,
-    resolveTheme,
     saveThemeChoice,
     THEME_CHOICES,
     type ThemeChoice,
@@ -18,7 +17,6 @@
 
   let posts = $state<PostView[]>([]);
   let hits = $state<SearchHit[] | null>(null);
-  let selectedId = $state<string | null>(null);
   let query = $state('');
   let libraryStats = $state<LibraryStats | null>(null);
   let themeChoice = $state<ThemeChoice>(loadThemeChoice());
@@ -37,7 +35,6 @@
   let showPairing = $state(false);
 
   const list = $derived(hits ? hits.map((h) => h.post) : posts);
-  const selected = $derived(list.find((p) => p.id === selectedId) ?? list[0] ?? null);
   const snippetFor = $derived((id: string) => hits?.find((h) => h.post.id === id)?.snippet ?? null);
 
   // ── theme ────────────────────────────────────────────────────────────────
@@ -163,12 +160,6 @@
       event.preventDefault();
       document.getElementById('xdl-search')?.focus();
     }
-    if (event.key === 'j' || event.key === 'k') {
-      const idx = list.findIndex((p) => p.id === selected?.id);
-      if (idx < 0) return;
-      const next = event.key === 'j' ? Math.min(idx + 1, list.length - 1) : Math.max(idx - 1, 0);
-      selectedId = list[next]?.id ?? null;
-    }
   }
 </script>
 
@@ -238,8 +229,8 @@
     <div class="banner error">{error}</div>
   {/if}
 
-  <main class="panes">
-    <section class="listpane scroll">
+  <main class="feed scroll">
+    <div class="column">
       <div class="listhead hairline">
         {#if query}
           <span>{list.length} result{list.length === 1 ? '' : 's'} for “{query}”</span>
@@ -264,49 +255,23 @@
           {:else}
             <p>No bookmarks yet.</p>
             <p class="muted">
-              Click <strong>Import</strong> and paste a captured payload to add
-              one. The capture userscript is the next milestone.
+              Scroll your bookmarks on <strong>x.com</strong> with the capture
+              script running, or click <strong>Import</strong> to paste a
+              captured payload.
             </p>
           {/if}
         </div>
       {:else}
         {#each list as post (post.id)}
-          <!--
-            A div, not a button. A row contains links and the action bar's own
-            buttons, and interactive elements cannot nest inside a <button> —
-            the parser flattens them and the links stop working.
-          -->
-          <div
-            class="row"
-            class:active={selected?.id === post.id}
-            role="button"
-            tabindex="0"
-            onclick={() => (selectedId = post.id)}
-            onkeydown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                selectedId = post.id;
-              }
-            }}
-          >
+          <div>
             {#if snippetFor(post.id)}
               <Snippet snippet={snippetFor(post.id)!} />
             {/if}
-            <Tweet post={post} variant="timeline" {openLink} />
+            <Tweet post={post} variant="timeline" onOpenLink={openLink} />
           </div>
         {/each}
       {/if}
-    </section>
-
-    <section class="detailpane scroll">
-      {#if selected}
-        <Tweet post={selected} variant="detail" {openLink} />
-      {:else}
-        <div class="empty">
-          <p class="muted">Select a bookmark to read it.</p>
-        </div>
-      {/if}
-    </section>
+    </div>
   </main>
 </div>
 
@@ -489,20 +454,30 @@
     color: #f4212e;
   }
 
-  .panes {
+  /*
+   * The scroller, and it spans the whole window so the scrollbar lands on the
+   * window edge where X puts it, rather than on the edge of the column.
+   */
+  .feed {
     flex: 1;
-    display: grid;
-    grid-template-columns: minmax(320px, 1fr) minmax(400px, 1.15fr);
     min-height: 0;
   }
 
-  .listpane {
+  /*
+   * 600px is X's own timeline width, and centring it is now the entire layout:
+   * the detail pane is gone, so this column *is* the app.
+   *
+   * The side borders are X's too, and they are not decoration — on a 1320px
+   * window an unbordered 600px column reads as a floating list rather than as
+   * a feed with empty gutters either side of it.
+   */
+  .column {
+    width: 100%;
+    max-width: 600px;
+    margin: 0 auto;
+    min-height: 100%;
+    border-left: 1px solid var(--border);
     border-right: 1px solid var(--border);
-    min-height: 0;
-  }
-
-  .detailpane {
-    min-height: 0;
   }
 
   .listhead {
@@ -514,23 +489,6 @@
     padding: 10px 16px;
     font-size: 13px;
     color: var(--text-secondary);
-  }
-
-  .row {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: 0;
-    color: inherit;
-    cursor: pointer;
-  }
-
-  .row.active {
-    background: var(--bg-hover);
-  }
-
-  .row :global(.tweet) {
-    border-bottom: 1px solid var(--border);
   }
 
   .empty {

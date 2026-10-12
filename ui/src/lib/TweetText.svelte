@@ -17,7 +17,7 @@
    * indices. If both fail, the entity renders as plain text — an unstyled link
    * is a cosmetic loss; a link styled one character off is corruption.
    */
-  import type { Entities, UrlEntity, MentionEntity, TagEntity } from './types';
+  import type { Entities, UrlEntity } from './types';
 
   interface Props {
     text: string;
