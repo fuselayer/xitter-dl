@@ -46,17 +46,49 @@
   });
 </script>
 
-<span class="snippet">
-  {#each parts as part, i (i)}{#if part.match}<mark>{part.text}</mark>{:else}{part.text}{/if}{/each}
-</span>
+<div class="snippet">
+  <span class="tag">Match</span>
+  <span class="context">
+    {#each parts as part, i (i)}{#if part.match}<mark>{part.text}</mark>{:else}{part.text}{/if}{/each}
+  </span>
+</div>
 
 <style>
   .snippet {
-    display: block;
-    padding: 10px 16px 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    /* 68px = the tweet's 16px padding + 40px avatar + 12px gap, so the match
+       context sits in the same text column as the tweet it belongs to rather
+       than floating against the card's left edge. */
+    padding: 12px 16px 0 68px;
     font-size: 13px;
     line-height: 17px;
     color: var(--text-secondary);
+  }
+
+  .tag {
+    flex: none;
+    margin-top: 1px;
+    font-size: 11px;
+    line-height: 1;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: rgba(29, 155, 240, 0.1);
+    padding: 3px 6px;
+    border-radius: 4px;
+  }
+
+  /* Two lines of context, then an ellipsis — a hit should orient the eye,
+     not pre-empt the tweet it sits above. */
+  .context {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: break-word;
   }
 
   mark {

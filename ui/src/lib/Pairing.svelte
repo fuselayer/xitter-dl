@@ -2,6 +2,9 @@
   /**
    * Connect a browser: show a pairing code, and report what arrives.
    *
+   * Rendered as a card in the right rail, in the slot X reserves for exactly
+   * this kind of sidebar module.
+   *
    * ## Why this component is mounted rather than toggled
    *
    * It is rendered only while the panel is open, so mounting *is* "show the
@@ -35,6 +38,23 @@
   // answers a question they did not ask.
   let showCode = $state(false);
 
+  // The TTL the current code started with, so the drain bar below it has a
+  // denominator. A panel opened mid-rotation sees a slightly generous bar for
+  // one cycle, which is harmless; the next rotation corrects it.
+  let codeTtl = $state(1);
+
+  let codeCopied = $state(false);
+
+  // "Unpair every browser" is the most destructive thing in the app, so it
+  // takes two clicks: the first arms the button, the second fires, and four
+  // seconds of inaction disarms it again.
+  let confirmUnpair = $state(false);
+  let confirmTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const ttlPct = $derived(
+    codeTtl > 0 ? Math.max(0, Math.min(100, (secondsLeft / codeTtl) * 100)) : 0,
+  );
+
   onMount(() => {
     let alive = true;
     let timer: ReturnType<typeof setInterval> | undefined;
@@ -42,6 +62,7 @@
     const apply = (next: api.PairingInfo) => {
       info = next;
       secondsLeft = next.secondsRemaining;
+      codeTtl = Math.max(next.secondsRemaining, 1);
       if (!next.paired) showCode = true;
     };
 
@@ -90,6 +111,7 @@
     return () => {
       alive = false;
       clearInterval(timer);
+      clearTimeout(confirmTimer);
       off?.();
       // Invalidate the code the moment the panel goes away.
       void api.pairingHide().catch(() => {});
@@ -103,15 +125,41 @@
       const next = await api.pairingShow();
       info = next;
       secondsLeft = next.secondsRemaining;
+      codeTtl = Math.max(next.secondsRemaining, 1);
     } catch (e) {
       error = String(e);
     }
+  }
+
+  async function copyCode() {
+    if (!info?.code) return;
+    try {
+      await navigator.clipboard.writeText(info.code);
+      codeCopied = true;
+      setTimeout(() => (codeCopied = false), 1600);
+    } catch {
+      // Clipboard denied: the code is still on screen and selectable, so the
+      // button failing quietly costs nothing.
+    }
+  }
+
+  function unpairClick() {
+    if (!confirmUnpair) {
+      confirmUnpair = true;
+      clearTimeout(confirmTimer);
+      confirmTimer = setTimeout(() => (confirmUnpair = false), 4000);
+      return;
+    }
+    confirmUnpair = false;
+    clearTimeout(confirmTimer);
+    void unpair();
   }
 
   async function unpair() {
     try {
       info = await api.pairingRevoke();
       secondsLeft = info.secondsRemaining;
+      codeTtl = Math.max(info.secondsRemaining, 1);
       lastCapture = null;
       showCode = true;
       note = 'Every paired browser must pair again before it can send anything.';
@@ -121,7 +169,7 @@
   }
 </script>
 
-<section class="pairing hairline">
+<section class="pairing">
   <header>
     <h3>Connect your browser</h3>
     <button class="x" onclick={onclose} title="Close">×</button>
@@ -153,7 +201,9 @@
         </p>
         <div class="row">
           <button class="ghost" onclick={addBrowser}>Add another browser</button>
-          <button class="danger" onclick={unpair}>Unpair every browser</button>
+          <button class="danger" class:armed={confirmUnpair} onclick={unpairClick}>
+            {confirmUnpair ? 'Click again to confirm' : 'Unpair every browser'}
+          </button>
         </div>
       {/if}
     {:else}
@@ -175,7 +225,15 @@
           corner of the page and type this code. You only do this once per browser.
         </p>
       {/if}
-      <div class="code">{info.formattedCode ?? '————-————'}</div>
+      <div class="code-row">
+        <div class="code">{info.formattedCode ?? '————-————'}</div>
+        {#if info.code}
+          <button class="ghost small" onclick={copyCode}>{codeCopied ? 'Copied' : 'Copy'}</button>
+        {/if}
+      </div>
+      <div class="ttl" aria-hidden="true">
+        <div class="ttl-fill" style="width: {ttlPct}%"></div>
+      </div>
       <p class="count">
         {#if secondsLeft > 0}
           New code in {secondsLeft}s. It rotates on its own — read the current one.
@@ -208,8 +266,12 @@
 </section>
 
 <style>
+  /* A right-rail card, matching the other panels in the sidebar. */
   .pairing {
-    padding: 14px 18px 16px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 12px 16px 16px;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -221,21 +283,21 @@
   }
   h3 {
     margin: 0;
-    font-size: 15px;
-    font-weight: 700;
+    font-size: 17px;
+    line-height: 20px;
+    font-weight: 800;
   }
   .x {
     margin-left: auto;
     border: 0;
     background: transparent;
-    color: inherit;
+    color: var(--text-secondary);
     font-size: 20px;
     line-height: 1;
     cursor: pointer;
-    opacity: 0.7;
   }
   .x:hover {
-    opacity: 1;
+    color: var(--text-primary);
   }
   p {
     margin: 0;
@@ -246,7 +308,7 @@
   .count,
   .addr,
   .capture {
-    opacity: 0.65;
+    color: var(--text-secondary);
     font-size: 12px;
   }
   .state {
@@ -260,16 +322,16 @@
     height: 8px;
     border-radius: 50%;
     flex: none;
-    background: #71767b;
+    background: var(--text-secondary);
   }
   .dot.ok {
-    background: #00ba7c;
+    background: var(--repost);
   }
   .dot.warn {
     background: #ffd400;
   }
   .ok {
-    color: #00ba7c;
+    color: var(--repost);
   }
   .bad {
     color: #f4212e;
@@ -279,6 +341,11 @@
     gap: 8px;
     flex-wrap: wrap;
   }
+  .code-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
   /* Large, monospace and widely tracked: this is read off the screen and typed
      into a different window, which is exactly the job letter-spacing is for. */
   .code {
@@ -286,8 +353,21 @@
     font-size: 30px;
     font-weight: 700;
     letter-spacing: 0.14em;
-    padding: 10px 0 6px;
+    padding: 8px 0 4px;
     user-select: all;
+  }
+  /* The code's remaining lifetime, draining left to right. The countdown text
+     below says the same thing; the bar just says it at a glance. */
+  .ttl {
+    height: 3px;
+    border-radius: 2px;
+    background: var(--bg-active);
+    overflow: hidden;
+  }
+  .ttl-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 1s linear;
   }
   code {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -303,18 +383,23 @@
     cursor: pointer;
     background: transparent;
   }
+  button.ghost.small {
+    padding: 4px 12px;
+    font-size: 12px;
+  }
   button.danger {
     border: 1px solid #f4212e;
     color: #f4212e;
   }
-  button.danger:hover {
+  button.danger:hover,
+  button.danger.armed {
     background: rgba(244, 33, 46, 0.1);
   }
   button.ghost {
-    border: 1px solid rgba(128, 128, 128, 0.5);
+    border: 1px solid var(--border);
     color: inherit;
   }
   button.ghost:hover {
-    background: rgba(128, 128, 128, 0.12);
+    background: var(--bg-hover);
   }
 </style>
