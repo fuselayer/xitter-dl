@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         xitter-dl capture
 // @namespace    https://github.com/example/xitter-dl
-// @version      0.4.1
+// @version      0.4.2
 // @description  Files away the bookmarks X already sent your browser, pictures included. No API.
 // @author       xitter-dl
 // @match        https://x.com/*
@@ -64,7 +64,7 @@
   // ── configuration ──────────────────────────────────────────────────────────
 
   const CFG = {
-    scriptVersion: '0.4.1',
+    scriptVersion: '0.4.2',
     wireVersion: 1,
 
     // Matched on the operation NAME, never on the rotating doc_id hash. This
@@ -632,15 +632,26 @@
   }
 
   /**
-   * The key a media item is remembered under.
+   * The URL that is actually fetched for a media item.
    *
-   * The variant is part of it so that changing `mediaThumbName` re-fetches
-   * media already kept at the old size — without this, every preview saved
-   * before the change would stay at the old resolution forever, because the
-   * remembered set has no idea a better one exists.
+   * A post's picture is asked for at the chosen variant; an avatar is kept as
+   * the payload named it, because `profile_images` does not serve `?name=`.
    */
-  function mediaKey(url) {
-    return String(url) + '|' + (CFG.mediaThumbName || 'orig');
+  function targetUrl(item) {
+    return item.avatar ? String(item.url) : thumbUrl(item.url);
+  }
+
+  /**
+   * The key a media item is remembered under: the URL fetched, not the URL
+   * stored.
+   *
+   * Including the variant means changing `mediaThumbName` re-fetches media
+   * already kept at the old size — without this, every preview saved before the
+   * change would stay at the old resolution forever, because the remembered set
+   * has no idea a better one exists.
+   */
+  function mediaKey(item) {
+    return targetUrl(item);
   }
 
   /**
@@ -677,6 +688,18 @@
             out.push({ postId: String(postId), url: String(url) });
           }
         }
+      }
+
+      // Profile pictures. One per account is enough: the URL is stable, so the
+      // second post by the same author is a duplicate and costs nothing.
+      // `avatar.image_url` is what the parser prefers, so it is preferred here
+      // too — storing a blob under the fallback URL would never be found.
+      const avatar =
+        (node.avatar && node.avatar.image_url) ||
+        (legacy && legacy.profile_image_url_https);
+      if (avatar && !seen.has(avatar)) {
+        seen.add(avatar);
+        out.push({ postId: null, url: String(avatar), avatar: true });
       }
 
       for (const k in node) walk(node[k], depth + 1);
@@ -733,7 +756,7 @@
 
   /** Fetch one thumbnail and turn it into a wire record. */
   async function fetchThumb(item) {
-    const url = thumbUrl(item.url);
+    const url = targetUrl(item);
     const r = await gmRequest({
       method: 'GET',
       url: url,
@@ -778,7 +801,7 @@
     let added = 0;
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      const key = mediaKey(item.url);
+      const key = mediaKey(item);
       if (seen.has(key) || mediaInFlight.has(key)) continue;
       mediaInFlight.add(key);
       mediaQueue.push(item);
@@ -815,7 +838,7 @@
             );
             // Remembered only once the app has been offered the bytes, so a
             // navigation mid-fetch costs one retry rather than a lost image.
-            seen.add(mediaKey(item.url));
+            seen.add(mediaKey(item));
             session.thumbs++;
             stored++;
             scheduleFlush();
@@ -823,7 +846,7 @@
         } catch (e) {
           log.warn('thumbnail error', e);
         } finally {
-          mediaInFlight.delete(mediaKey(item.url));
+          mediaInFlight.delete(mediaKey(item));
         }
 
         if (CFG.mediaGapMs > 0) {

@@ -30,9 +30,9 @@
   let importBusy = $state(false);
   let importNote = $state<string | null>(null);
 
-  // Connect-a-browser panel. Mounted only while open, because mounting is what
-  // starts the pairing code and unmounting is what invalidates it.
-  let showPairing = $state(false);
+  // Any control outside the rail can ask the connection panel to open its code;
+  // bumping this counter is the whole protocol.
+  let connectSignal = $state(0);
 
   // The window-spanning scroller, so the "Bookmarks" rail item can double as
   // scroll-to-top the way X's own nav items do.
@@ -84,6 +84,35 @@
     void refresh();
   });
 
+  // A batch names the posts it touched, so the feed re-reads those rows
+  // instead of reloading five hundred of them — the reload was what made the
+  // window stutter every time a preview arrived. `changed` is empty when there
+  // were too many to list, and only then is a full refresh the right answer.
+  const pendingIds = new Set<string>();
+  let patchTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function queuePatch(ids: string[]) {
+    if (!ids.length || hits) return;
+    for (const id of ids) pendingIds.add(id);
+    clearTimeout(patchTimer);
+    patchTimer = setTimeout(async () => {
+      const batch = [...pendingIds];
+      pendingIds.clear();
+      try {
+        const views = await api.postsByIds(batch);
+        if (!views.length) return;
+        const byId = new Map(views.map((v) => [v.id, v]));
+        posts = posts.map((p) => byId.get(p.id) ?? p);
+        // A changed post that is not on screen means the list itself is out of
+        // date — a new bookmark, or one that was removed.
+        const shown = new Set(posts.map((p) => p.id));
+        if (batch.some((id) => !shown.has(id))) void refresh();
+      } catch (e) {
+        error = String(e);
+      }
+    }, 220);
+  }
+
   // Live capture. Without this the list would be stale exactly when it matters
   // most: you scroll x.com, the receiver files twenty bookmarks, and the window
   // you are looking at shows none of them.
@@ -93,10 +122,9 @@
     void api
       .onBridgeEvent((event) => {
         if (!alive) return;
-        // `new` is zero when a page was already stored but its thumbnails were
-        // not: a rescan adds previews to posts that are already on screen, and
-        // those have to repaint too or they wait for the next launch.
-        if (event.type === 'captured' && (event.new > 0 || event.media > 0)) void refresh();
+        if (event.type !== 'captured') return;
+        if (event.changed.length) queuePatch(event.changed);
+        else if (event.new > 0 || event.media > 0) void refresh();
       })
       .then((f) => {
         if (alive) off = f;
@@ -127,7 +155,7 @@
       } catch (e) {
         error = String(e);
       }
-    }, 60);
+    }, 150);
     return () => clearTimeout(searchTimer);
   });
 
@@ -165,8 +193,7 @@
 
   function onKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape') {
-      if (showPairing) showPairing = false;
-      else if (showImport) showImport = false;
+      if (showImport) showImport = false;
       else if (query) query = '';
     }
     // "/" focuses search, exactly as it does on X.
@@ -208,9 +235,9 @@
         </nav>
 
         <div class="rail-actions">
-          <button class="primary wide" onclick={() => (showPairing = !showPairing)}>
-            Connect browser
-          </button>
+          <!-- Connection lives here, not in the right rail: it is a state of the
+               app, not a sidebar module, and it changes on its own. -->
+          <Pairing openSignal={connectSignal} />
           <button class="ghost wide" onclick={() => (showImport = !showImport)}>
             Import JSON
           </button>
@@ -297,7 +324,7 @@
               paste a captured payload to file your first post.
             </p>
             <div class="empty-actions">
-              <button class="primary" onclick={() => (showPairing = true)}>Connect browser</button>
+              <button class="primary" onclick={() => (connectSignal += 1)}>Connect browser</button>
               <button class="ghost" onclick={() => (showImport = true)}>Import JSON</button>
             </div>
           {/if}
@@ -335,10 +362,6 @@
           />
           {#if query}<button class="clear" onclick={() => (query = '')} title="Clear">×</button>{/if}
         </div>
-
-        {#if showPairing}
-          <Pairing onclose={() => (showPairing = false)} />
-        {/if}
 
         {#if showImport}
           <section class="panel">

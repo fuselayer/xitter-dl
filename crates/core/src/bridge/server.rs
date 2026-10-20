@@ -83,8 +83,16 @@ pub struct CaptureReport {
     pub updated: usize,
     /// Thumbnails stored from this batch.
     pub media: usize,
+    /// Posts this batch changed, so the window can re-read those rows rather
+    /// than reload the whole list. Capped: a truncated list would silently miss
+    /// rows, so past the cap the window falls back to a full refresh.
+    pub changed: Vec<String>,
     pub problems: Vec<String>,
 }
+
+/// Ids are only a shortcut for the window. Past this many in one batch the
+/// saving is gone anyway, and the caller should reload.
+pub const MAX_CHANGED_IDS: usize = 400;
 
 impl CaptureReport {
     fn from_summary(s: ImportSummary) -> Self {
@@ -93,11 +101,18 @@ impl CaptureReport {
         if total > MAX_REPORTED_PROBLEMS {
             problems.push(format!("...and {} more", total - MAX_REPORTED_PROBLEMS));
         }
+        let mut changed = s.stats.touched;
+        changed.sort();
+        changed.dedup();
+        if changed.len() > MAX_CHANGED_IDS {
+            changed.clear();
+        }
         Self {
             seen: s.stats.seen,
             new: s.stats.new,
             updated: s.stats.updated,
             media: s.stats.media,
+            changed,
             problems,
         }
     }

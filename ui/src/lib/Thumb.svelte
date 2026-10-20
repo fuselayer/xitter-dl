@@ -6,14 +6,12 @@
    * allows `data:` and not `asset:`, so this needs no scope entry and no
    * capability: the file read happens in Rust, behind a hash guard.
    *
-   * The cache is module-level because a re-render is not a reason to re-encode
-   * the same JPEG through IPC, and because the same picture on several posts is
-   * one hash. A `null` in the cache means the file was gone when we asked, and
-   * is remembered too — asking again on every mount would be a read per frame.
+   * The cache lives in `thumbs.ts` rather than here, so an avatar and a media
+   * grid showing the same file cost one IPC round trip between them.
    */
   import { onMount } from 'svelte';
   import type { MediaBlob } from './types';
-  import { mediaThumb } from './api';
+  import { thumbFor } from './thumbs';
 
   interface Props {
     blob: MediaBlob;
@@ -22,21 +20,16 @@
 
   let { blob, alt }: Props = $props();
 
-  const cache = new Map<string, string | null>();
   let url = $state<string | null>(null);
 
   onMount(() => {
-    const hit = cache.get(blob.hash);
-    if (hit !== undefined) {
-      url = hit;
-      return;
-    }
-    mediaThumb(blob.hash)
-      .then((value) => {
-        cache.set(blob.hash, value);
-        url = value;
-      })
-      .catch(() => cache.set(blob.hash, null));
+    let live = true;
+    thumbFor(blob.hash).then((value) => {
+      if (live) url = value;
+    });
+    return () => {
+      live = false;
+    };
   });
 </script>
 

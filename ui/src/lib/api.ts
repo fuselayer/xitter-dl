@@ -31,6 +31,18 @@ export async function getPost(id: string): Promise<PostView | null> {
 }
 
 /**
+ * Re-read just these posts.
+ *
+ * A capture reports the ids it touched; the window asks for those rows instead
+ * of reloading the whole list, which is what made the feed stutter on every
+ * incoming preview.
+ */
+export async function postsByIds(ids: string[]): Promise<PostView[]> {
+  if (!ids.length) return [];
+  return invoke<PostView[]>('posts_by_ids', { ids });
+}
+
+/**
  * Read one stored thumbnail as a `data:` URL.
  *
  * Keyed by content hash rather than by post: the same picture on twenty
@@ -108,6 +120,12 @@ export interface PairingInfo {
   paired: boolean;
   pairedLabel: string | null;
   pairedAt: number | null;
+  /**
+   * Unix seconds of the last batch this bridge ingested in this run, or `null`
+   * if no browser has delivered anything since launch. `paired` is history;
+   * this is presence.
+   */
+  lastCaptureAt: number | null;
 }
 
 /** What one ingested batch did. Mirrors `bridge::CaptureReport` in Rust. */
@@ -117,6 +135,8 @@ export interface CaptureReport {
   updated: number;
   /** Thumbnails stored from this batch. */
   media: number;
+  /** Posts this batch changed. Empty when there were too many to list. */
+  changed: string[];
   problems: string[];
 }
 

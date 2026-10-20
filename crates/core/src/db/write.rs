@@ -26,7 +26,7 @@ use crate::x::{self, PARSER_VERSION};
 pub const SOURCE_CAPTURE: &str = "capture";
 pub const SOURCE_IMPORT: &str = "file_import";
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IngestStats {
     /// Tweets present in the payload.
     pub seen: usize,
@@ -38,6 +38,12 @@ pub struct IngestStats {
     pub payloads: usize,
     /// Thumbnails stored (`media` records, or an import that carried blobs).
     pub media: usize,
+    /// Posts whose stored view changed in this batch, by id.
+    ///
+    /// The window uses this to re-read the rows that actually moved instead of
+    /// reloading the whole list; a page of twenty posts costs twenty ids, not a
+    /// 500-post re-parse and a megabyte over IPC.
+    pub touched: Vec<String>,
 }
 
 impl IngestStats {
@@ -47,6 +53,7 @@ impl IngestStats {
         self.updated += other.updated;
         self.payloads += other.payloads;
         self.media += other.media;
+        self.touched.extend(other.touched);
     }
 }
 
@@ -134,6 +141,7 @@ pub fn store_payload_value(
         } else {
             stats.updated += 1;
         }
+        stats.touched.push(tweet.id.clone());
 
         conn.execute(
             "INSERT OR IGNORE INTO post_payloads (post_id, payload_id) VALUES (?1, ?2)",
@@ -184,7 +192,7 @@ pub fn store_tweet_value(
     bookmarked: bool,
     sort_index: Option<&str>,
     bookmarked_at: Option<i64>,
-) -> Result<Option<bool>> {
+) -> Result<Option<(String, bool)>> {
     let Some(tweet) = crate::x::parse_tweet_result(raw_tweet) else {
         return Ok(None);
     };
@@ -195,7 +203,7 @@ pub fn store_tweet_value(
         mark_bookmarked(conn, &tweet.id, sort_index, bookmarked_at, observed_at)?;
     }
 
-    Ok(Some(is_new))
+    Ok(Some((tweet.id, is_new)))
 }
 
 /// Insert or refresh a tweet and everything hanging off it.

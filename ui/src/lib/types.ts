@@ -67,6 +67,12 @@ export interface Author {
   /** X Premium blue check. */
   blueVerified: boolean;
   verifiedType: string | null;
+  /**
+   * The stored profile picture, filled by the Rust read layer from
+   * `media_blobs`. `null` means this library holds no picture for the account —
+   * the avatar component falls back to a monogram.
+   */
+  avatarBlob: MediaBlob | null;
 }
 
 export type MediaKind = 'photo' | 'video' | 'gif';
@@ -193,6 +199,8 @@ export interface ImportResult {
   payloads: number;
   /** Thumbnails newly stored by this import. */
   media: number;
+  /** Posts this import changed; empty when the list would have been too long. */
+  changed: string[];
   problems: string[];
   library: LibraryStats;
 }

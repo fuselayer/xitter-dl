@@ -1,133 +1,150 @@
 <script lang="ts">
   /**
-   * Connect a browser: show a pairing code, and report what arrives.
+   * The connection state, in the left rail.
    *
-   * Rendered as a card in the right rail, in the slot X reserves for exactly
-   * this kind of sidebar module.
+   * It answers one question — *is a browser sending me things right now* — and
+   * it used to answer it wrongly, because "a secret was issued on 12 October" is
+   * history, not presence. `lastCaptureAt` from the backend is the presence
+   * signal: the bridge stamps it every time a batch lands.
    *
-   * ## Why this component is mounted rather than toggled
+   * ## When the code shows
    *
-   * It is rendered only while the panel is open, so mounting *is* "show the
-   * code" and unmounting *is* "hide the code". That mapping is deliberate: the
-   * backend invalidates the code when the panel closes, because a code that
-   * stays valid while off screen is a code nobody is watching. A CSS `hidden`
-   * toggle would quietly break that guarantee.
+   * `showCode` *is* the request: opening it calls `pairingShow`, closing it calls
+   * `pairingHide`, and the backend invalidates the code on hide. A code that
+   * stayed valid while off screen would be a code nobody is watching. That is
+   * why this is state and not a CSS toggle.
    *
-   * ## Why a paired bridge can still show a code
-   *
-   * One secret serves every browser that redeemed a code, so being paired is
-   * not a reason to hide the code — it is the reason someone might want a
-   * second one. Opening this panel on an already-paired bridge used to show a
-   * dead end and nothing else, which made "connect my laptop too" look
-   * identical to "something is wrong". Both states now lead somewhere.
+   * It is only offered when it is useful: someone unpaired needs it, someone
+   * connected and active does not, and a paired bridge that has gone quiet is
+   * usually a browser that was closed — which also wants a code.
    */
 
   import { onMount } from 'svelte';
   import * as api from './api';
 
-  let { onclose }: { onclose: () => void } = $props();
+  /** A counter the app bumps to ask for the code from elsewhere in the window. */
+  let { openSignal = 0 }: { openSignal?: number } = $props();
 
   let info = $state<api.PairingInfo | null>(null);
   let error = $state<string | null>(null);
   let secondsLeft = $state(0);
-  let lastCapture = $state<api.CaptureReport | null>(null);
-  let note = $state<string | null>(null);
-
-  // Whether the code block is on screen. Starts true only once we know the
-  // bridge is unpaired — showing a code to someone who is already connected
-  // answers a question they did not ask.
   let showCode = $state(false);
-
-  // The TTL the current code started with, so the drain bar below it has a
-  // denominator. A panel opened mid-rotation sees a slightly generous bar for
-  // one cycle, which is harmless; the next rotation corrects it.
-  let codeTtl = $state(1);
-
   let codeCopied = $state(false);
+  let codeTtl = $state(1);
+  let now = $state(Math.floor(Date.now() / 1000));
 
-  // "Unpair every browser" is the most destructive thing in the app, so it
-  // takes two clicks: the first arms the button, the second fires, and four
-  // seconds of inaction disarms it again.
+  // Two clicks for unpair: the first arms it, four seconds of inaction disarms.
   let confirmUnpair = $state(false);
   let confirmTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /** Active means bytes arrived recently, not that a secret exists. */
+  const ACTIVE_WINDOW = 180;
+
+  const active = $derived(
+    info?.lastCaptureAt != null && now - info.lastCaptureAt < ACTIVE_WINDOW,
+  );
+  const paired = $derived(info?.paired ?? false);
   const ttlPct = $derived(
     codeTtl > 0 ? Math.max(0, Math.min(100, (secondsLeft / codeTtl) * 100)) : 0,
   );
 
+  /** "12s ago", "4m ago", "3h ago" — the shift from presence to history. */
+  function ago(at: number | null): string {
+    if (at == null) return 'never';
+    const d = Math.max(0, now - at);
+    if (d < 60) return `${d}s ago`;
+    if (d < 3600) return `${Math.floor(d / 60)}m ago`;
+    return `${Math.floor(d / 3600)}h ago`;
+  }
+
+  function apply(next: api.PairingInfo) {
+    info = next;
+    secondsLeft = next.secondsRemaining;
+    codeTtl = Math.max(next.secondsRemaining, 1);
+  }
+
   onMount(() => {
     let alive = true;
-    let timer: ReturnType<typeof setInterval> | undefined;
+    let off: (() => void) | undefined;
 
-    const apply = (next: api.PairingInfo) => {
-      info = next;
-      secondsLeft = next.secondsRemaining;
-      codeTtl = Math.max(next.secondsRemaining, 1);
-      if (!next.paired) showCode = true;
-    };
+    void api
+      .pairingStatus()
+      .then((next) => alive && apply(next))
+      .catch((e) => alive && (error = String(e)));
 
-    const rotate = async () => {
-      try {
-        const next = await api.pairingShow();
-        if (alive) apply(next);
-      } catch (e) {
-        if (alive) error = String(e);
+    // One poll covers everything that changes without an event: the code's
+    // remaining life, the "ago" label, and a capture that landed before the
+    // event subscription finished.
+    const timer = setInterval(() => {
+      if (!alive) return;
+      now = Math.floor(Date.now() / 1000);
+      if (!showCode) {
+        void api
+          .pairingStatus()
+          .then((next) => alive && apply(next))
+          .catch(() => {});
+        return;
       }
-    };
-
-    void rotate();
-
-    timer = setInterval(() => {
-      if (!alive || !showCode) return;
       secondsLeft -= 1;
-      if (secondsLeft <= 0) void rotate();
+      if (secondsLeft <= 0) void openCode();
     }, 1000);
 
-    let off: (() => void) | undefined;
     void api
       .onBridgeEvent((event) => {
         if (!alive) return;
         if (event.type === 'paired') {
-          note = event.label ? `Paired with ${event.label}.` : 'Paired.';
-          // A successful exchange means the code did its job; get it off the
-          // screen rather than leaving a spent code sitting there.
+          // The code did its job; get it off the screen.
           showCode = false;
-          void api.pairingStatus().then(apply).catch(() => {});
+          void api
+            .pairingStatus()
+            .then((next) => alive && apply(next))
+            .catch(() => {});
         } else if (event.type === 'captured') {
-          lastCapture = event;
-          note = null;
-        } else if (event.type === 'rejected') {
-          note = `A request was refused: ${event.reason}`;
+          now = Math.floor(Date.now() / 1000);
+          if (info) info = { ...info, lastCaptureAt: now };
         }
       })
       .then((f) => {
         if (alive) off = f;
         else f();
       })
-      .catch((e) => {
-        if (alive) error = String(e);
-      });
+      .catch(() => {});
 
     return () => {
       alive = false;
       clearInterval(timer);
       clearTimeout(confirmTimer);
       off?.();
-      // Invalidate the code the moment the panel goes away.
-      void api.pairingHide().catch(() => {});
+      // A code left valid behind a collapsed panel is a code nobody is watching.
+      if (showCode) void api.pairingHide().catch(() => {});
     };
   });
 
-  async function addBrowser() {
+  async function openCode() {
     showCode = true;
     error = null;
     try {
-      const next = await api.pairingShow();
-      info = next;
-      secondsLeft = next.secondsRemaining;
-      codeTtl = Math.max(next.secondsRemaining, 1);
+      apply(await api.pairingShow());
     } catch (e) {
       error = String(e);
+    }
+  }
+
+  // The empty state and any future affordance open the code by bumping a
+  // counter, so they do not need to reach inside this component.
+  let seenSignal = 0;
+  $effect(() => {
+    if (openSignal === seenSignal) return;
+    seenSignal = openSignal;
+    void openCode();
+  });
+
+  async function closeCode() {
+    showCode = false;
+    try {
+      apply(await api.pairingHide());
+    } catch {
+      /* the panel is closing; a failure here changes nothing visible */
     }
   }
 
@@ -138,8 +155,8 @@
       codeCopied = true;
       setTimeout(() => (codeCopied = false), 1600);
     } catch {
-      // Clipboard denied: the code is still on screen and selectable, so the
-      // button failing quietly costs nothing.
+      // Clipboard denied: the code is on screen and selectable, so this failing
+      // quietly costs nothing.
     }
   }
 
@@ -157,76 +174,46 @@
 
   async function unpair() {
     try {
-      info = await api.pairingRevoke();
-      secondsLeft = info.secondsRemaining;
-      codeTtl = Math.max(info.secondsRemaining, 1);
-      lastCapture = null;
-      showCode = true;
-      note = 'Every paired browser must pair again before it can send anything.';
+      apply(await api.pairingRevoke());
+      void openCode();
     } catch (e) {
       error = String(e);
     }
   }
 </script>
 
-<section class="pairing">
-  <header>
-    <h3>Connect your browser</h3>
-    <button class="x" onclick={onclose} title="Close">×</button>
-  </header>
-
+<section class="conn">
   {#if error}
     <p class="bad">{error}</p>
   {/if}
 
   {#if info && info.port === 0}
-    <p class="bad">
-      The capture receiver is not running, so no browser can connect. Something
-      stopped it binding a loopback port at startup.
-    </p>
-  {:else if info}
-    {#if info.paired}
+    <p class="bad">The capture receiver is not running — no browser can connect.</p>
+  {:else if !info}
+    <p class="meta">Asking the backend…</p>
+  {:else}
+    {#if active}
       <p class="state ok">
         <span class="dot ok"></span>
-        A secret was issued{#if info.pairedLabel} to {info.pairedLabel}{/if}{#if info.pairedAt}
-          on {new Date(info.pairedAt * 1000).toLocaleDateString()}{/if}.
+        Connected
       </p>
-      {#if !showCode}
-        <p class="hint">
-          Pairing is per browser: the secret lives in that browser's userscript
-          storage, and this panel can only know that one was handed out — not
-          that a browser still holds it. If the pill on x.com says it is not
-          paired, use <strong>Add another browser</strong> rather than unpairing.
-          That issues a fresh code and leaves the browsers that already work alone.
-        </p>
-        <div class="row">
-          <button class="ghost" onclick={addBrowser}>Add another browser</button>
-          <button class="danger" class:armed={confirmUnpair} onclick={unpairClick}>
-            {confirmUnpair ? 'Click again to confirm' : 'Unpair every browser'}
-          </button>
-        </div>
-      {/if}
-    {:else}
+      <p class="meta">{info.pairedLabel ?? 'a browser'} · {ago(info.lastCaptureAt)}</p>
+    {:else if paired}
       <p class="state">
         <span class="dot warn"></span>
-        Waiting for a browser to pair.
+        No browser active
+      </p>
+      <p class="meta">Paired {ago(info.pairedAt)} · nothing arriving</p>
+    {:else}
+      <p class="state">
+        <span class="dot"></span>
+        Not connected
       </p>
     {/if}
 
     {#if showCode}
-      {#if info.paired}
-        <p class="hint">
-          This code connects an <strong>additional</strong> browser. Browsers
-          already paired keep working.
-        </p>
-      {:else}
-        <p class="hint">
-          On <code>x.com/i/bookmarks</code>, click the pill in the bottom-right
-          corner of the page and type this code. You only do this once per browser.
-        </p>
-      {/if}
       <div class="code-row">
-        <div class="code">{info.formattedCode ?? '————-————'}</div>
+        <div class="code">{info.formattedCode ?? '——'}</div>
         {#if info.code}
           <button class="ghost small" onclick={copyCode}>{codeCopied ? 'Copied' : 'Copy'}</button>
         {/if}
@@ -234,88 +221,45 @@
       <div class="ttl" aria-hidden="true">
         <div class="ttl-fill" style="width: {ttlPct}%"></div>
       </div>
-      <p class="count">
-        {#if secondsLeft > 0}
-          New code in {secondsLeft}s. It rotates on its own — read the current one.
-        {:else}
-          Rotating…
-        {/if}
+      <p class="meta">
+        {#if secondsLeft > 0}New code in {secondsLeft}s{:else}Rotating…{/if} · type it
+        into the pill on x.com
       </p>
-    {/if}
-
-    <p class="addr">
-      Receiver <code>{info.address}</code>
-    </p>
-  {:else}
-    <p class="hint">Asking the backend…</p>
-  {/if}
-
-  {#if lastCapture}
-    <p class="capture">
-      Last batch: {lastCapture.seen} seen, {lastCapture.new} new,
-      {lastCapture.updated} already held.
-      {#if lastCapture.problems.length}
-        <span class="bad">{lastCapture.problems.length} could not be read.</span>
+      <p class="meta">Receiver {info.address}</p>
+      <button class="ghost small" onclick={closeCode}>Done</button>
+    {:else if active}
+      <div class="row">
+        <button class="ghost small" onclick={openCode}>Add browser</button>
+        <button class="quiet" class:armed={confirmUnpair} onclick={unpairClick}>
+          {confirmUnpair ? 'Sure?' : 'Unpair'}
+        </button>
+      </div>
+    {:else}
+      <button class="primary wide" onclick={openCode}>Connect browser</button>
+      {#if paired}
+        <button class="quiet" class:armed={confirmUnpair} onclick={unpairClick}>
+          {confirmUnpair ? 'Sure?' : 'Unpair'}
+        </button>
       {/if}
-    </p>
-  {/if}
-
-  {#if note}
-    <p class="hint">{note}</p>
+    {/if}
   {/if}
 </section>
 
 <style>
-  /* A right-rail card, matching the other panels in the sidebar. */
-  .pairing {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 12px 16px 16px;
+  .conn {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-  }
-  header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  h3 {
-    margin: 0;
-    font-size: 17px;
-    line-height: 20px;
-    font-weight: 800;
-  }
-  .x {
-    margin-left: auto;
-    border: 0;
-    background: transparent;
-    color: var(--text-secondary);
-    font-size: 20px;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .x:hover {
-    color: var(--text-primary);
+    gap: 6px;
   }
   p {
     margin: 0;
-    font-size: 13px;
-    line-height: 1.5;
-  }
-  .hint,
-  .count,
-  .addr,
-  .capture {
-    color: var(--text-secondary);
-    font-size: 12px;
   }
   .state {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-weight: 600;
+    gap: 7px;
+    font-size: 14px;
+    font-weight: 700;
   }
   .dot {
     width: 8px;
@@ -335,29 +279,29 @@
   }
   .bad {
     color: #f4212e;
+    font-size: 12px;
+    line-height: 1.4;
   }
-  .row {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
+  .meta {
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
   }
   .code-row {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
   }
-  /* Large, monospace and widely tracked: this is read off the screen and typed
-     into a different window, which is exactly the job letter-spacing is for. */
+  /* Read off this screen and typed into another window, so tracking earns its
+     keep even at rail width. */
   .code {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 30px;
+    font-size: 19px;
     font-weight: 700;
-    letter-spacing: 0.14em;
-    padding: 8px 0 4px;
+    letter-spacing: 0.1em;
     user-select: all;
   }
-  /* The code's remaining lifetime, draining left to right. The countdown text
-     below says the same thing; the bar just says it at a glance. */
   .ttl {
     height: 3px;
     border-radius: 2px;
@@ -369,37 +313,44 @@
     background: var(--accent);
     transition: width 1s linear;
   }
-  code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.95em;
-    opacity: 0.85;
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
-  button.danger,
+  button.primary.wide {
+    width: 100%;
+  }
   button.ghost {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: inherit;
     border-radius: 9999px;
     padding: 6px 14px;
     font-size: 13px;
     font-weight: 600;
     cursor: pointer;
-    background: transparent;
   }
   button.ghost.small {
-    padding: 4px 12px;
+    padding: 4px 11px;
     font-size: 12px;
-  }
-  button.danger {
-    border: 1px solid #f4212e;
-    color: #f4212e;
-  }
-  button.danger:hover,
-  button.danger.armed {
-    background: rgba(244, 33, 46, 0.1);
-  }
-  button.ghost {
-    border: 1px solid var(--border);
-    color: inherit;
   }
   button.ghost:hover {
     background: var(--bg-hover);
+  }
+  /* Unpair is a text link, not a button: the destructive action should not
+     compete with the one thing this panel is for. */
+  button.quiet {
+    border: 0;
+    background: none;
+    padding: 4px 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    text-align: left;
+  }
+  button.quiet:hover,
+  button.quiet.armed {
+    color: #f4212e;
   }
 </style>

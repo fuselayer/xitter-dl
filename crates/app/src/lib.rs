@@ -30,7 +30,7 @@
 //! capture batch and a manual import are both short.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
 use xdl_core::bridge::{Bridge, BridgeEvent, BridgeOptions, Ingest, Notify, Pairing};
@@ -51,6 +51,10 @@ pub struct AppState {
     pairing_path: PathBuf,
     /// The port the bridge actually bound, or 0 before it starts.
     port: AtomicU16,
+    /// Unix seconds of the last batch a browser successfully delivered, 0 if
+    /// none this run. What makes "connected" mean *connected now* rather than
+    /// "someone paired once, months ago".
+    last_capture_at: Arc<AtomicI64>,
     /// Kept alive for the life of the process; dropping it stops the listener.
     bridge: Mutex<Option<Bridge>>,
 }
@@ -76,6 +80,7 @@ impl AppState {
             pairing: Arc::new(Mutex::new(pairing)),
             pairing_path,
             port: AtomicU16::new(0),
+            last_capture_at: Arc::new(AtomicI64::new(0)),
             bridge: Mutex::new(None),
         })
     }
@@ -133,6 +138,9 @@ pub struct ImportResult {
     payloads: usize,
     /// Thumbnails newly stored by this import.
     media: usize,
+    /// Posts this import changed, by id. Empty when the batch was too large to
+    /// be worth listing, in which case the caller should reload.
+    changed: Vec<String>,
     problems: Vec<String>,
     library: read::LibraryStats,
 }
@@ -150,6 +158,7 @@ fn summarize(
         updated: stats.updated,
         payloads: stats.payloads,
         media: stats.media,
+        changed: stats.touched,
         problems,
         library: read::stats(conn).map_err(err)?,
     })
@@ -167,6 +176,25 @@ fn list_bookmarks(state: State<'_, AppState>, limit: usize, offset: usize) -> Re
 fn get_post(state: State<'_, AppState>, id: String) -> Result<Option<PostView>, String> {
     let lib = state.reader()?;
     read::get_post(lib.conn(), &id).map_err(err)
+}
+
+/// Re-read a handful of posts after a capture changed them.
+///
+/// The window refreshes the rows a batch actually touched instead of reloading
+/// the whole 500-post list, which is what made the feed stutter every time a
+/// preview arrived.
+#[tauri::command]
+fn posts_by_ids(state: State<'_, AppState>, ids: Vec<String>) -> Result<Vec<PostView>, String> {
+    let lib = state.reader()?;
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids.iter().take(500) {
+        match read::get_post(lib.conn(), id).map_err(err)? {
+            Some(view) => out.push(view),
+            // Removed or never stored: the caller keeps what it has.
+            None => {}
+        }
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -340,6 +368,10 @@ pub struct PairingInfo {
     paired: bool,
     paired_label: Option<String>,
     paired_at: Option<i64>,
+    /// Unix seconds of the last batch this bridge ingested in this run, or
+    /// `None` if no browser has delivered anything since launch. `paired` says
+    /// a secret exists; this says somebody is actually on the other end.
+    last_capture_at: Option<i64>,
 }
 
 fn snapshot(state: &AppState) -> Result<PairingInfo, String> {
@@ -356,6 +388,10 @@ fn snapshot(state: &AppState) -> Result<PairingInfo, String> {
         paired: p.is_paired(),
         paired_label: p.paired_label.clone(),
         paired_at: p.paired_at,
+        last_capture_at: match state.last_capture_at.load(Ordering::Relaxed) {
+            0 => None,
+            at => Some(at),
+        },
     })
 }
 
@@ -430,13 +466,22 @@ fn start_bridge(app: &tauri::AppHandle, state: &AppState) -> xdl_core::Result<()
     let emitter = app.clone();
     let pairing = Arc::clone(&state.pairing);
     let pairing_path = state.pairing_path().to_path_buf();
+    let last_capture = Arc::clone(&state.last_capture_at);
     let notify: Notify = Arc::new(move |event: BridgeEvent| {
         // A successful exchange changes the persisted state, and the bridge is
         // where that happens, so the write belongs here.
-        if matches!(event, BridgeEvent::Paired { .. }) {
-            if let Ok(p) = pairing.lock() {
-                persist_pairing(&pairing_path, &p);
+        match &event {
+            BridgeEvent::Paired { .. } => {
+                if let Ok(p) = pairing.lock() {
+                    persist_pairing(&pairing_path, &p);
+                }
             }
+            // The only evidence that a browser is on the other end right now.
+            // Pairing alone is history; this is presence.
+            BridgeEvent::Captured(_) => {
+                last_capture.store(xdl_core::now(), Ordering::Relaxed);
+            }
+            BridgeEvent::Rejected { .. } => {}
         }
         let _ = emitter.emit(BRIDGE_EVENT, &event);
     });
@@ -539,6 +584,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_bookmarks,
             get_post,
+            posts_by_ids,
             search,
             stats,
             library_path,

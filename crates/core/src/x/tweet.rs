@@ -177,6 +177,8 @@ fn parse_author(v: &Value) -> Author {
         verified: b(user, "/legacy/verified") || b(user, "/verification/verified"),
         blue_verified: b(user, "/is_blue_verified"),
         verified_type,
+        // Whether the library holds the picture is a read-time question.
+        avatar_blob: None,
     }
 }
 

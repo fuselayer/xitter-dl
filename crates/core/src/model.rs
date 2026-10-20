@@ -105,6 +105,11 @@ pub struct Author {
     pub blue_verified: bool,
     /// `blue` | `business` | `government` | `none`, when X supplies it.
     pub verified_type: Option<String>,
+    /// The profile picture's bytes, filled in by the read layer from
+    /// `media_blobs` by `avatar_url`. The parser never sets it — nothing in a
+    /// payload knows whether the library holds the image.
+    #[serde(default)]
+    pub avatar_blob: Option<MediaBlob>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

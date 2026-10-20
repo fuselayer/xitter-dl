@@ -121,6 +121,26 @@ pub fn import_file(conn: &Connection, path: &Path, now: i64) -> Result<ImportSum
 
 /// Import NDJSON from a string.
 pub fn import_str(conn: &Connection, text: &str, now: i64) -> Result<ImportSummary> {
+    // Callers that already wrapped this in a transaction (the bridge does) must
+    // not get a nested BEGIN, so only an autocommit connection is opened here.
+    if !conn.is_autocommit() {
+        return import_lines(conn, text, now);
+    }
+    // One transaction for the whole batch, so the write lock is taken once
+    // instead of once per record.
+    let tx = conn.unchecked_transaction()?;
+    let summary = import_lines(&tx, text, now)?;
+    tx.commit()?;
+    Ok(summary)
+}
+
+/// The body of [`import_str`], run inside its transaction.
+///
+/// Without the wrapper every record committed on its own — a page of twenty
+/// posts and forty previews is sixty separate writes, and each one takes the
+/// same write lock the window's `list_bookmarks` and its search are queued
+/// behind. That is why typing went sticky while a scroll was ingesting.
+fn import_lines(conn: &Connection, text: &str, now: i64) -> Result<ImportSummary> {
     let mut summary = ImportSummary {
         files: 1,
         ..Default::default()
@@ -205,13 +225,14 @@ pub fn import_str(conn: &Connection, text: &str, now: i64) -> Result<ImportSumma
                     sort_index.as_deref(),
                     bookmarked_at,
                 ) {
-                    Ok(Some(is_new)) => {
+                    Ok(Some((id, is_new))) => {
                         summary.stats.seen += 1;
                         if is_new {
                             summary.stats.new += 1;
                         } else {
                             summary.stats.updated += 1;
                         }
+                        summary.stats.touched.push(id);
                     }
                     Ok(None) => summary
                         .problems
@@ -289,10 +310,17 @@ pub fn import_str(conn: &Connection, text: &str, now: i64) -> Result<ImportSumma
                 match store.put(&mime, &bytes) {
                     Ok((hash, len)) => {
                         match write::attach_media_blob(conn, &url, &hash, &mime, len as i64, at) {
-                            // Counted only when it is new. A re-scroll re-sends
-                            // every thumbnail it sees, and a counter that went
-                            // up on each would be measuring scrolling.
-                            Ok(true) => summary.stats.media += 1,
+                            // Counted only when the mapping actually moved: new
+                            // URL, or a sharper preview replacing a known one.
+                            // A re-scroll re-sends what it already stored, and a
+                            // counter that went up on each would be measuring
+                            // scrolling.
+                            Ok(true) => {
+                                summary.stats.media += 1;
+                                if let Some(p) = post_id.as_deref() {
+                                    summary.stats.touched.push(p.to_string());
+                                }
+                            }
                             Ok(false) => {}
                             Err(e) => {
                                 summary.problems.push(format!("line {}: {e}", lineno + 1))

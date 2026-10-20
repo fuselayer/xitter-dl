@@ -142,11 +142,18 @@ pub fn attach_blobs(conn: &Connection, posts: &mut [PostView]) -> Result<()> {
     Ok(())
 }
 
-/// Every media URL a tweet can show, its own plus its quoted post's.
+/// Every media URL a tweet can show: its own, its quoted post's, and the profile
+/// pictures of both authors.
 fn urls_of(tweet: &Tweet) -> Vec<String> {
     let mut out: Vec<String> = tweet.media.iter().map(|m| m.url.clone()).collect();
+    if let Some(url) = &tweet.author.avatar_url {
+        out.push(url.clone());
+    }
     if let Some(quoted) = &tweet.quoted {
         out.extend(quoted.media.iter().map(|m| m.url.clone()));
+        if let Some(url) = &quoted.author.avatar_url {
+            out.push(url.clone());
+        }
     }
     out
 }
@@ -154,6 +161,9 @@ fn urls_of(tweet: &Tweet) -> Vec<String> {
 fn fill_blobs(tweet: &mut Tweet, blobs: &HashMap<String, MediaBlob>) {
     for media in tweet.media.iter_mut() {
         media.blob = blobs.get(&media.url).cloned();
+    }
+    if let Some(url) = &tweet.author.avatar_url {
+        tweet.author.avatar_blob = blobs.get(url).cloned();
     }
     if let Some(quoted) = tweet.quoted.as_mut() {
         fill_blobs(quoted, blobs);

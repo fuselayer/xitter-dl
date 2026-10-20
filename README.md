@@ -106,8 +106,10 @@ The userscript files away bookmarks X **already sent** your browser. It
 originates no requests, holds no X credential, and never touches the timeline
 DOM.
 
-1. Start the app and click **Connect browser**. It shows a short code that
-   rotates every two minutes.
+1. Start the app. The left rail shows the connection state — **Connect browser**
+   when nothing is paired, and a code that rotates every two minutes once you
+   ask for one. When a browser is delivering, the same spot reads *Connected*
+   with how long ago the last batch arrived.
 2. Install `userscript/xitter-dl-capture.user.js` in Tampermonkey or
    Violentmonkey. Install it from the raw GitHub URL rather than pasting the
    file: Tampermonkey reads `@updateURL` from the copy it already has, so a
@@ -370,6 +372,12 @@ wide, the size the timeline renders, 47 kB, aspect kept. Measured on real media:
 `medium` 136 kB, `orig` 800 kB. A video's URL is its poster, and X ignores the
 variant name there — one poster at 1200×675, ~59 kB, which is what a video
 bookmark shows. The CLI prints which items are cached and which are not.
+
+**Profile pictures** ride the same store. The userscript fetches the account's
+`avatar.image_url` as the payload named it — `profile_images` serves no
+`?name=small` — and the read layer attaches it to `author.avatarBlob` by that
+URL. One file per account, reused by every post it wrote; without one the
+avatar component draws a monogram.
 
 **Who fetches it.** The userscript, never the app. The app still links no HTTP
 client and holds no X credential (PRD §4.3); the browser is the only place an
