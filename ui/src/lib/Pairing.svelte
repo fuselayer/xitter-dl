@@ -197,7 +197,10 @@
         <span class="dot ok"></span>
         Connected
       </p>
-      <p class="meta">{info.pairedLabel ?? 'a browser'} · {ago(info.lastCaptureAt)}</p>
+      <p class="meta">
+        {info.scriptVersion ? `userscript ${info.scriptVersion}` : (info.pairedLabel ?? 'a browser')}
+        · {ago(info.lastCaptureAt)}
+      </p>
     {:else if paired}
       <p class="state">
         <span class="dot warn"></span>

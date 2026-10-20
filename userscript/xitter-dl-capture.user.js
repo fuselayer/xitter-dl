@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         xitter-dl capture
 // @namespace    https://github.com/example/xitter-dl
-// @version      0.4.2
+// @version      0.4.3
 // @description  Files away the bookmarks X already sent your browser, pictures included. No API.
 // @author       xitter-dl
 // @match        https://x.com/*
@@ -64,7 +64,7 @@
   // ── configuration ──────────────────────────────────────────────────────────
 
   const CFG = {
-    scriptVersion: '0.4.2',
+    scriptVersion: '0.4.3',
     wireVersion: 1,
 
     // Matched on the operation NAME, never on the rotating doc_id hash. This
@@ -1211,6 +1211,10 @@
             headers: {
               Authorization: 'Bearer ' + secret,
               'Content-Type': 'application/x-ndjson',
+              // The window shows this next to "Connected". The pairing label is
+              // frozen at pairing time, so without it the app can only report
+              // whatever version happened to pair — often not the one running.
+              'X-Xdl-Version': CFG.scriptVersion,
             },
           });
         } catch (e) {

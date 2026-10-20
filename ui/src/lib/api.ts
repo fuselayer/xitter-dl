@@ -126,6 +126,8 @@ export interface PairingInfo {
    * this is presence.
    */
   lastCaptureAt: number | null;
+  /** The version the last batch reported. `null` until one arrives. */
+  scriptVersion: string | null;
 }
 
 /** What one ingested batch did. Mirrors `bridge::CaptureReport` in Rust. */
@@ -135,6 +137,8 @@ export interface CaptureReport {
   updated: number;
   /** Thumbnails stored from this batch. */
   media: number;
+  /** The userscript version the batch came from, when it said. */
+  scriptVersion: string | null;
   /** Posts this batch changed. Empty when there were too many to list. */
   changed: string[];
   problems: string[];

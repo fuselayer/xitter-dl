@@ -493,6 +493,24 @@ pub fn attach_media_blob(
     Ok(changed)
 }
 
+/// Post ids whose author's profile picture is stored at `url`.
+///
+/// An avatar is not attached to one post, so a batch that only stores one has no
+/// `post_id` to report. The window patches by post id, so without this an avatar
+/// that arrived live would sit in the database until the next launch.
+pub fn post_ids_for_avatar(conn: &Connection, url: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM posts
+          WHERE author_id IN (SELECT id FROM authors WHERE avatar_url = ?1)",
+    )?;
+    let mut rows = stmt.query(params![url])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(row.get(0)?);
+    }
+    Ok(out)
+}
+
 /// Rewrite a post's link rows from its URL entities and card.
 fn replace_links(conn: &Connection, tweet: &Tweet) -> Result<()> {
     conn.execute("DELETE FROM links WHERE post_id = ?1", params![tweet.id])?;

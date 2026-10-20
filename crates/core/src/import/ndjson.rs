@@ -317,8 +317,16 @@ fn import_lines(conn: &Connection, text: &str, now: i64) -> Result<ImportSummary
                             // scrolling.
                             Ok(true) => {
                                 summary.stats.media += 1;
-                                if let Some(p) = post_id.as_deref() {
-                                    summary.stats.touched.push(p.to_string());
+                                match post_id.as_deref() {
+                                    Some(p) => summary.stats.touched.push(p.to_string()),
+                                    // A profile picture belongs to no single
+                                    // post; every post by that account has to
+                                    // repaint, or the avatar only shows up
+                                    // after a restart.
+                                    None => summary
+                                        .stats
+                                        .touched
+                                        .extend(write::post_ids_for_avatar(conn, &url)?),
                                 }
                             }
                             Ok(false) => {}

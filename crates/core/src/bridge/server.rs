@@ -77,12 +77,18 @@ pub type Ingest = Arc<dyn Fn(&str, i64) -> Result<ImportSummary> + Send + Sync>;
 pub type Notify = Arc<dyn Fn(BridgeEvent) + Send + Sync>;
 
 #[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CaptureReport {
     pub seen: usize,
     pub new: usize,
     pub updated: usize,
     /// Thumbnails stored from this batch.
     pub media: usize,
+    /// The userscript version that sent this batch, from its `X-Xdl-Version`
+    /// header. This is the only way the window can say which script is actually
+    /// connected — the pairing label is whatever version paired, possibly weeks
+    /// ago.
+    pub script_version: Option<String>,
     /// Posts this batch changed, so the window can re-read those rows rather
     /// than reload the whole list. Capped: a truncated list would silently miss
     /// rows, so past the cap the window falls back to a full refresh.
@@ -95,7 +101,7 @@ pub struct CaptureReport {
 pub const MAX_CHANGED_IDS: usize = 400;
 
 impl CaptureReport {
-    fn from_summary(s: ImportSummary) -> Self {
+    fn from_summary(s: ImportSummary, script_version: Option<String>) -> Self {
         let total = s.problems.len();
         let mut problems: Vec<String> = s.problems.into_iter().take(MAX_REPORTED_PROBLEMS).collect();
         if total > MAX_REPORTED_PROBLEMS {
@@ -112,6 +118,7 @@ impl CaptureReport {
             new: s.stats.new,
             updated: s.stats.updated,
             media: s.stats.media,
+            script_version,
             changed,
             problems,
         }
@@ -370,7 +377,10 @@ fn route(req: &Request, ctx: &Ctx) -> std::result::Result<(u16, serde_json::Valu
 
             let now = crate::now();
             let summary = (ctx.ingest)(body, now).map_err(|e| (400u16, e.to_string()))?;
-            let report = CaptureReport::from_summary(summary);
+            let report = CaptureReport::from_summary(
+                summary,
+                req.header("x-xdl-version").map(str::to_owned),
+            );
             (ctx.notify)(BridgeEvent::Captured(report.clone()));
 
             let mut value = serde_json::to_value(&report).unwrap_or_else(|_| serde_json::json!({}));

@@ -55,6 +55,10 @@ pub struct AppState {
     /// none this run. What makes "connected" mean *connected now* rather than
     /// "someone paired once, months ago".
     last_capture_at: Arc<AtomicI64>,
+    /// The version string the last batch carried. The pairing label is frozen
+    /// at pairing time, so this is the only live answer to "which script is
+    /// running".
+    last_script_version: Arc<Mutex<Option<String>>>,
     /// Kept alive for the life of the process; dropping it stops the listener.
     bridge: Mutex<Option<Bridge>>,
 }
@@ -81,6 +85,7 @@ impl AppState {
             pairing_path,
             port: AtomicU16::new(0),
             last_capture_at: Arc::new(AtomicI64::new(0)),
+            last_script_version: Arc::new(Mutex::new(None)),
             bridge: Mutex::new(None),
         })
     }
@@ -372,6 +377,9 @@ pub struct PairingInfo {
     /// `None` if no browser has delivered anything since launch. `paired` says
     /// a secret exists; this says somebody is actually on the other end.
     last_capture_at: Option<i64>,
+    /// The version the last batch carried, e.g. `0.4.3`. `None` until a batch
+    /// arrives (or for a script too old to send the header).
+    script_version: Option<String>,
 }
 
 fn snapshot(state: &AppState) -> Result<PairingInfo, String> {
@@ -392,6 +400,11 @@ fn snapshot(state: &AppState) -> Result<PairingInfo, String> {
             0 => None,
             at => Some(at),
         },
+        script_version: state
+            .last_script_version
+            .lock()
+            .ok()
+            .and_then(|v| v.clone()),
     })
 }
 
@@ -467,6 +480,7 @@ fn start_bridge(app: &tauri::AppHandle, state: &AppState) -> xdl_core::Result<()
     let pairing = Arc::clone(&state.pairing);
     let pairing_path = state.pairing_path().to_path_buf();
     let last_capture = Arc::clone(&state.last_capture_at);
+    let last_version = Arc::clone(&state.last_script_version);
     let notify: Notify = Arc::new(move |event: BridgeEvent| {
         // A successful exchange changes the persisted state, and the bridge is
         // where that happens, so the write belongs here.
@@ -478,8 +492,13 @@ fn start_bridge(app: &tauri::AppHandle, state: &AppState) -> xdl_core::Result<()
             }
             // The only evidence that a browser is on the other end right now.
             // Pairing alone is history; this is presence.
-            BridgeEvent::Captured(_) => {
+            BridgeEvent::Captured(report) => {
                 last_capture.store(xdl_core::now(), Ordering::Relaxed);
+                if let Some(v) = &report.script_version {
+                    if let Ok(mut slot) = last_version.lock() {
+                        *slot = Some(v.clone());
+                    }
+                }
             }
             BridgeEvent::Rejected { .. } => {}
         }
