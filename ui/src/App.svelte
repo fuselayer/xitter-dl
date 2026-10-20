@@ -102,11 +102,11 @@
         const views = await api.postsByIds(batch);
         if (!views.length) return;
         const byId = new Map(views.map((v) => [v.id, v]));
+        // Patch only what is on screen. A batch about a post further down the
+        // bookmarks list is not a reason to reload the window: the list it
+        // would reload is the same list, and reloading it on every batch was
+        // the stutter this whole path exists to remove.
         posts = posts.map((p) => byId.get(p.id) ?? p);
-        // A changed post that is not on screen means the list itself is out of
-        // date — a new bookmark, or one that was removed.
-        const shown = new Set(posts.map((p) => p.id));
-        if (batch.some((id) => !shown.has(id))) void refresh();
       } catch (e) {
         error = String(e);
       }
@@ -123,8 +123,15 @@
       .onBridgeEvent((event) => {
         if (!alive) return;
         if (event.type !== 'captured') return;
-        if (event.changed.length) queuePatch(event.changed);
-        else if (event.new > 0 || event.media > 0) void refresh();
+        // New bookmarks change the list itself — a page of them has to be
+        // merged, not patched — so those still take a full read. Everything
+        // else re-reads by id: that is what stops a scroll filing twenty pages
+        // from re-parsing five hundred posts every couple of seconds.
+        if (event.new > 0) void refresh();
+        else if (event.changed.length) queuePatch(event.changed);
+        // Changed ids are dropped past the cap, and media can arrive without
+        // one; both cases mean "too much to describe", so reload.
+        else if (event.media > 0) void refresh();
       })
       .then((f) => {
         if (alive) off = f;
