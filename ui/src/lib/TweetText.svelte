@@ -27,6 +27,16 @@
     /** Timeline rows render at 15px, the detail view at 17px. */
     size?: 'timeline' | 'detail';
     /**
+     * Lines to show before clamping. `0` never clamps.
+     *
+     * A timeline row shows five, which is where X cuts a long post off before
+     * "Show more"; a quoted post shows three and cannot be opened out, because
+     * the card has nowhere to put the rest.
+     */
+    clamp?: number;
+    /** Whether the clamp can be lifted by the reader. */
+    expandable?: boolean;
+    /**
      * Called instead of navigating. Inside the app a plain `<a href>` would
      * send the *webview* to an X-owned host, which is exactly what the
      * architecture forbids — so clicks are always handed outward to the OS
@@ -40,8 +50,55 @@
     entities,
     hasMedia = false,
     size = 'timeline',
+    clamp = 0,
+    expandable = true,
     onOpenLink,
   }: Props = $props();
+
+  let expanded = $state(false);
+  let overflowing = $state(false);
+  let body: HTMLParagraphElement | undefined = $state();
+
+  const clamped = $derived(clamp > 0 && !expanded);
+
+  // The measurement below is the truth, but it depends on a layout pass that can
+  // still be settling when the first paint happens. A post this long has to
+  // offer "Show more" even if that measurement came back zero, or the reader is
+  // left with text that is silently cut off and no way to see the rest. X uses
+  // the same 280-character threshold to decide what counts as long.
+  const likelyLong = $derived(
+    text.length > 280 || (text.match(/\n/g)?.length ?? 0) > 4,
+  );
+  const showMore = $derived(clamped && expandable && (overflowing || likelyLong));
+
+  // Measure on mount and whenever the box changes width. `scrollHeight` is not
+  // trustworthy under a line clamp (engines disagree on whether it reports the
+  // clipped or the full content), so the clamp is lifted for the measurement
+  // and put back inside the same frame. Two synchronous layouts, no paint.
+  $effect(() => {
+    const node = body;
+    if (!node || clamp === 0) {
+      overflowing = false;
+      return;
+    }
+    const measure = () => {
+      const wasClamped = node.classList.contains('clamped');
+      node.classList.remove('clamped');
+      const full = node.clientHeight;
+      if (wasClamped) node.classList.add('clamped');
+      const line = parseFloat(getComputedStyle(node).lineHeight) || 20;
+      overflowing = full > line * clamp + 1;
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(node);
+    // Chirp can still be swapping in when this first runs, and a different face
+    // changes how many lines the text takes.
+    if (typeof document !== 'undefined' && document.fonts) {
+      void document.fonts.ready.then(measure).catch(() => {});
+    }
+    return () => ro.disconnect();
+  });
 
   type Segment =
     | { kind: 'text'; text: string }
@@ -194,7 +251,12 @@
   }
 </script>
 
-<p class="tweet-text {size}">
+<p
+  bind:this={body}
+  class="tweet-text {size}"
+  class:clamped
+  style={clamped ? `--clamp-lines: ${clamp}` : undefined}
+>
   {#each segments as seg, i (i)}
     {#if seg.kind === 'text'}<span>{seg.text}</span
       >{:else}<a
@@ -207,6 +269,13 @@
       >{/if}
   {/each}
 </p>
+
+{#if showMore}
+  <!-- X's own affordance: a plain accent link under the cut-off text. -->
+  <button class="more {size}" type="button" aria-expanded={expanded} onclick={() => (expanded = true)}>
+    Show more
+  </button>
+{/if}
 
 <style>
   .tweet-text {
@@ -226,6 +295,39 @@
   .tweet-text.detail {
     font-size: 17px;
     line-height: 24px;
+  }
+
+  /* A clamped row: the text is cut at N lines and the rest is not laid out. */
+  .tweet-text.clamped {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: var(--clamp-lines, 5);
+    overflow: hidden;
+  }
+
+  .more {
+    display: inline-block;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .more.timeline {
+    font-size: 15px;
+    line-height: 20px;
+  }
+
+  .more.detail {
+    font-size: 17px;
+    line-height: 24px;
+  }
+
+  .more:hover {
+    text-decoration: underline;
   }
 
   a {

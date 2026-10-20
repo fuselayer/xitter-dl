@@ -58,7 +58,10 @@
 
   // ── data ─────────────────────────────────────────────────────────────────
   async function refresh() {
-    loading = true;
+    // Only a window with nothing on screen gets the skeleton. A live capture
+    // arrives while you are reading, and swapping the feed for placeholder
+    // tiles on every batch reads as the app going black and redrawing.
+    if (list.length === 0) loading = true;
     error = null;
     try {
       if (api.isTauri()) {

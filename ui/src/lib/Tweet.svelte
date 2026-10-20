@@ -74,6 +74,7 @@
       entities={t.entities}
       hasMedia={t.media.length > 0}
       size={variant === 'detail' ? 'detail' : 'timeline'}
+      clamp={variant === 'detail' ? 0 : 5}
       {onOpenLink}
     />
 
@@ -107,6 +108,8 @@
           entities={t.quoted.entities}
           hasMedia={t.quoted.media.length > 0}
           size="timeline"
+          clamp={3}
+          expandable={false}
           {onOpenLink}
         />
         {#if t.quoted.media.length > 0}
