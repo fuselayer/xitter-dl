@@ -30,6 +30,18 @@ export async function getPost(id: string): Promise<PostView | null> {
   return invoke<PostView | null>('get_post', { id });
 }
 
+/**
+ * Read one stored thumbnail as a `data:` URL.
+ *
+ * Keyed by content hash rather than by post: the same picture on twenty
+ * bookmarks is one file. `null` means this library does not hold that image, so
+ * the caller draws its placeholder — "not downloaded" and "broken" are
+ * different states, and only one of them is our fault.
+ */
+export async function mediaThumb(hash: string): Promise<string | null> {
+  return invoke<string | null>('media_thumb', { hash });
+}
+
 export async function search(query: string, limit = 50): Promise<SearchHit[]> {
   return invoke<SearchHit[]>('search', { query, limit });
 }
@@ -103,6 +115,8 @@ export interface CaptureReport {
   seen: number;
   new: number;
   updated: number;
+  /** Thumbnails stored from this batch. */
+  media: number;
   problems: string[];
 }
 

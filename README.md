@@ -13,16 +13,16 @@ No API, no OAuth, no scraping service, no cloud, no account, no recurring cost.
 
 | Piece | State |
 |---|---|
-| `crates/core` | Schema, X payload parsing, importers, FTS5 search — 151 tests |
+| `crates/core` | Schema, X payload parsing, importers, FTS5 search — 166 tests |
 | `crates/core/src/bridge` | Loopback receiver and pairing — 57 of those, over real sockets |
 | `crates/cli` | `xdl import / search / show / stats / bridge` |
 | `crates/app` | Tauri v2 shell: window, IPC commands, receiver lifecycle |
 | `ui` | Svelte 5 frontend, three X themes, capture and pairing panel |
-| `userscript` | Capture script — 36 JS tests |
+| `userscript` | Capture script — thumbnails included — 41 JS tests |
 | Continuous capture | Not implemented |
-| Media | Not implemented — see [Media](#media-is-not-implemented) |
+| Media | Thumbnails only — see [Media is thumbnails only](#media-is-thumbnails-only) |
 
-Rust: `165` tests. JavaScript: `36`.
+Rust: `180` tests. JavaScript: `41`.
 
 ---
 
@@ -78,7 +78,9 @@ One SQLite file holds everything:
 
 The app and the CLI both resolve it through `xdl_core::default_library_path`, so
 they cannot disagree about which file holds your bookmarks. `bridge.json` sits
-beside it, which is why pairing carries between the two.
+beside it, which is why pairing carries between the two, and so does `media/`,
+which is where thumbnails are cached. Nothing is stored inside a build, so the
+installed exe and a dev build share one library and one cache.
 
 Keep two libraries, and never point the app at the wrong one:
 
@@ -210,7 +212,9 @@ node userscript/test/capture.test.mjs
 node userscript/test/pill.test.mjs
 ```
 
-`node --test userscript/test/` also works on current Node. The harnesses build
+`node --test userscript/test/*.test.mjs` runs both files in one go. A directory
+argument is not expanded by Node 26 — it is resolved as a module path and fails
+with `MODULE_NOT_FOUND`, so name the files. The harnesses build
 a stubbed browser, evaluate the **real** `.user.js` in it, and drive it through
 the fetch hook, so they fail if the hooks stop installing, if `response.clone()`
 stops being called, or if the wire format drifts from the Rust parser.
@@ -353,25 +357,51 @@ whose build script passes `-DSQLITE_ENABLE_FTS5` to the C compiler. The
 
 ---
 
-## Media is not implemented
+## Media is thumbnails only
 
-No media is downloaded yet, at any size, and frames render from the payload's
-own dimensions with the real alt text rather than a broken image. Avatars are
-monograms for the same reason.
+A bookmark shows the smallest preview X publishes, and nothing larger. No
+originals, no video, no audio — by design for now, because a bookmarks feed
+contains videos of hundreds of megabytes and pulling those down implicitly is a
+bandwidth and disk decision the user never made.
 
-When it lands, the intended policy has a size ceiling: media lives on
-`pbs.twimg.com`, and a bookmarks feed contains multi-hundred-megabyte videos
-that should never be pulled down implicitly.
+**What is fetched.** `?name=thumb` on the payload's own `media_url_https`.
+Measured against real media: `thumb` is 150×150 at 6.3 kB, `small` 680 px at
+47 kB, `orig` 800 kB. A video's URL is its poster, and X ignores the variant
+name there — one poster at 1200×675, ~59 kB, which is what a video bookmark
+shows. The CLI prints which items are cached and which are not.
 
-- Default ceiling of a few MB per item. Anything larger is catalogued — size,
-  dimensions, duration, URL — but not fetched.
-- A skipped item renders as a named placeholder (`video · 412 MB · not
-  downloaded`), never a broken image.
-- Each skipped item can be fetched individually.
-- A default-off toggle allows automatic large downloads, with a hard cap.
+**Who fetches it.** The userscript, never the app. The app still links no HTTP
+client and holds no X credential (PRD §4.3); the browser is the only place an
+image request can legitimately originate. Note this is not the "cache hit" an
+earlier draft described: the payload carries a bare URL and the variant the
+page rendered lives only in the DOM the script refuses to read, so every
+thumbnail is one deliberate request.
 
-The ceiling is checked before any request, so a skipped item costs zero bytes
-and never touches the politeness budget.
+**Where it lives.** `media/<sha256>.<ext>` beside the database — for the default
+library, `%APPDATA%\xitter-dl\media\`. Content-addressed and idempotent: the
+same picture on twenty bookmarks is one file, and a re-scroll rewrites nothing.
+Because it sits beside the library rather than inside a build, the installed
+exe and a dev build share one cache.
+
+**How it is attached.** `media_blobs` maps the *media URL* to that hash. Not the
+`media` row: `replace_media` deletes and rewrites a post's media rows on every
+re-import, so a thumbnail hanging off a row would disappear on the next scroll
+of the bookmarks page. Keying on the URL also means a thumbnail may arrive
+before the post it belongs to, which is a real ordering on the wire.
+
+**How it is drawn.** The `media_thumb` command returns a `data:` URL for one
+hash. The CSP stays `img-src 'self' data:` — no `asset:` scope, no file-read
+capability handed to the webview, and the hash is validated against 64 hex
+characters before any path is built.
+
+**What a gap looks like.** An item without bytes draws the "not archived yet"
+frame. Bookmarks captured before this landed stay in that state until the
+bookmarks page is scrolled again; that pass collects previews from pages the
+page-hash dedupe already rejects, which is exactly what makes backfill work.
+
+**Switching it off.** The Tampermonkey menu has a "thumbnails" switch, separate
+from the network hooks. Off means this script requests nothing from X's CDN;
+capture is unaffected.
 
 ---
 

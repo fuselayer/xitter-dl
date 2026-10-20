@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         xitter-dl capture
 // @namespace    https://github.com/example/xitter-dl
-// @version      0.3.3
-// @description  Files away the bookmarks X already sent your browser. No API, no extra requests.
+// @version      0.4.0
+// @description  Files away the bookmarks X already sent your browser, with their smallest previews. No API.
 // @author       xitter-dl
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -14,6 +14,7 @@
 // @grant        unsafeWindow
 // @connect      127.0.0.1
 // @connect      localhost
+// @connect      pbs.twimg.com
 // @updateURL    https://raw.githubusercontent.com/fuselayer/local-x-bookmarks/main/userscript/xitter-dl-capture.user.js
 // @downloadURL  https://raw.githubusercontent.com/fuselayer/local-x-bookmarks/main/userscript/xitter-dl-capture.user.js
 // ==/UserScript==
@@ -24,22 +25,30 @@
  *
  * It wraps `fetch` and `XMLHttpRequest` before X's own bundle loads, and reads
  * the responses the page was *already* going to receive. It originates no
- * requests to X. Not one. Your scrolling triggers the pagination fetches it
- * always would have; this script reads the answers on the way past.
+ * requests to X's API. Not one. Your scrolling triggers the pagination fetches
+ * it always would have; this script reads the answers on the way past.
+ *
+ * The single exception is thumbnails: it fetches `?name=thumb` for the media in
+ * a captured page, because the desktop app links no HTTP client at all and the
+ * browser is the only place an image request can legitimately originate. Those
+ * are new, small, deliberate requests to `pbs.twimg.com` — the smallest preview
+ * X serves, never the original — and the menu switch turns them off without
+ * touching capture.
  *
  * That distinction is the whole design, so it is worth being precise about:
  * passive capture adds ZERO additional requests, which is not the same claim as
  * zero risk. The residual risk is only whatever your own browsing already
- * carried.
+ * carried, plus those preview fetches.
  *
  * It therefore will not, and must not ever:
  *   - construct or replay a GraphQL request, or use a doc_id for anything
  *   - touch cookies, auth_token, ct0, or any credential
  *   - click, scroll, like, follow, or synthesise input on your behalf
  *   - read or write the DOM of the timeline
+ *   - fetch anything larger than a thumbnail
  *
- * The only network calls it makes are to 127.0.0.1, to hand captured bytes to
- * the desktop app.
+ * Its network calls go to 127.0.0.1, to hand captured bytes to the desktop app,
+ * and to `pbs.twimg.com` for those previews. Nothing else, ever.
  *
  * TWO NON-NEGOTIABLES
  * -------------------
@@ -55,7 +64,7 @@
   // ── configuration ──────────────────────────────────────────────────────────
 
   const CFG = {
-    scriptVersion: '0.3.3',
+    scriptVersion: '0.4.0',
     wireVersion: 1,
 
     // Matched on the operation NAME, never on the rotating doc_id hash. This
@@ -72,6 +81,12 @@
     // How long to wait after a capture before flushing, so a fast scroll
     // coalesces into one request instead of one per page.
     flushDelayMs: 1200,
+
+    // The bridge refuses a body over 8 MB with a 413, and `flush` keeps a batch
+    // that was not accepted — so an oversized batch would retry forever. A
+    // thumbnail record is ~6 kB of base64 for a photo and up to ~1.3 MB for a
+    // poster, which is why the batch is capped by bytes as well as by count.
+    batchMaxChars: 4 * 1024 * 1024,
 
     // Refuse absurd bodies rather than hashing them. A bookmarks page is a few
     // hundred kB; this is a sanity bound, not a real limit.
@@ -118,6 +133,42 @@
     // which happens on any route and will widen this list rather than remove it.
     // The route watch below is where that plugs in.
     activeRoutes: ['/i/bookmarks', '/i/history'],
+
+    // ── thumbnails ─────────────────────────────────────────────────────────
+    //
+    // This script fetches them because the app cannot: it links no HTTP client
+    // and holds no X credential, and that is enforced at the dependency
+    // boundary rather than by policy (PRD §4.3, §7.5). The browser is the only
+    // place an image request can originate from, so it originates here.
+    //
+    // It is NOT the "cache hit" the PRD once described. The payload carries a
+    // bare `media_url_https`, and the variant the page actually rendered lives
+    // only in the DOM this script refuses to read — so every thumbnail is a URL
+    // we construct and a request we make. Measured: `thumb` is 6 kB for a photo,
+    // `small` 47 kB, `orig` 800 kB.
+
+    // The variant to ask for. `thumb` is 150×150 — a square crop — and for a
+    // video it is ignored: X serves one poster at 1200×675 for every name, so a
+    // video thumbnail is that poster. `small` (680 px wide) is the one word to
+    // change if `thumb` looks too soft.
+    mediaThumbName: 'thumb',
+
+    // Off via the Tampermonkey menu, which is why it is read as a preference
+    // rather than used directly.
+    mediaEnabled: true,
+
+    // Refuse anything implausible for a preview. A poster is ~60 kB.
+    mediaMaxBytes: 1024 * 1024,
+
+    // Two at a time with a small gap. These are real requests: a 20-post page
+    // is up to 80 of them, and X's own timeline loads one image per media item
+    // anyway — but ours should not arrive in a burst.
+    mediaConcurrency: 2,
+    mediaGapMs: 120,
+
+    // URLs remembered so scrolling the same posts again costs nothing. Bounded
+    // because this lives in the userscript manager's storage.
+    mediaSeenMax: 2000,
   };
 
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -297,6 +348,26 @@
       return this.lines.slice(0, n);
     },
 
+    /**
+     * As `take`, but stop adding once the batch would reach `maxChars`.
+     *
+     * Always returns at least one line: a single record over the budget has to
+     * be attempted alone, or the queue wedges instead of the app refusing it
+     * once. Returns [] on an empty queue, like `take`.
+     */
+    takeWithin(n, maxChars) {
+      this.ensure();
+      const out = [];
+      let chars = 0;
+      for (let i = 0; i < this.lines.length && out.length < n; i++) {
+        const line = this.lines[i];
+        if (out.length > 0 && chars + line.length > maxChars) break;
+        out.push(line);
+        chars += line.length;
+      }
+      return out;
+    },
+
     drop(n) {
       this.ensure();
       this.lines.splice(0, n);
@@ -328,6 +399,7 @@
     pages: 0,
     posts: 0,
     refused: 0,
+    thumbs: 0,
   };
 
   // ── what the hooks actually saw ────────────────────────────────────────────
@@ -482,12 +554,6 @@
         return;
       }
 
-      const hash = bodyHash(text);
-      if (!queue.firstSight(hash)) {
-        log.info('repeat page, ignored', hash);
-        return;
-      }
-
       let parsed;
       try {
         parsed = JSON.parse(text);
@@ -503,26 +569,265 @@
         return;
       }
 
-      const op = operationName(url) || 'Bookmarks';
-      const line = JSON.stringify({
-        v: CFG.wireVersion,
-        kind: 'page',
-        captured_at: Math.floor(Date.now() / 1000),
-        op: op,
-        via: via,
-        raw: parsed,
-      });
+      const hash = bodyHash(text);
+      if (queue.firstSight(hash)) {
+        const op = operationName(url) || 'Bookmarks';
+        const line = JSON.stringify({
+          v: CFG.wireVersion,
+          kind: 'page',
+          captured_at: Math.floor(Date.now() / 1000),
+          op: op,
+          via: via,
+          raw: parsed,
+        });
 
-      queue.push(line);
-      session.pages++;
-      session.posts += info.posts;
-      render();
+        queue.push(line);
+        session.pages++;
+        session.posts += info.posts;
+        render();
 
-      log.info('captured', op, info.posts, 'posts, cursor', info.bottomCursor);
+        log.info('captured', op, info.posts, 'posts, cursor', info.bottomCursor);
+      } else {
+        log.info('repeat page, ignored', hash);
+      }
+
+      // Thumbnails are collected for every page that carries a timeline, not
+      // only the ones whose bytes are new. Re-opening the bookmarks page gives
+      // the same page bodies — `firstSight` above rejects them — and that is
+      // exactly the pass that fills in previews for posts already in the
+      // library. Its own URL dedupe is what keeps the second pass cheap.
+      sendMedia(parsed);
+
       scheduleFlush();
     } catch (e) {
       // The non-negotiable: a capture bug must never reach the page.
       log.warn('capture failed', e);
+    }
+  }
+
+  // ── thumbnails ─────────────────────────────────────────────────────────────
+  //
+  // The one place in this script that requests something from X's CDN, and the
+  // reason it is here rather than in the app: the app links no HTTP client and
+  // holds no X credential (PRD §4.3, §7.5). The browser is the only place an
+  // image request can legitimately originate, so it originates here.
+  //
+  // Each item is one request for the smallest variant X serves. That is a
+  // deliberate trade — a few kilobytes per bookmark instead of the full picture
+  // — and it is why this is bounded, rate-limited and switchable.
+
+  const mediaQueue = [];
+  const mediaInFlight = new Set();
+  let mediaRunning = false;
+
+  /** The smallest preview URL for a media item. */
+  function thumbUrl(url) {
+    if (!CFG.mediaThumbName) return String(url);
+    // The payload's URL is usually bare, but `?format=jpg&name=small` does turn
+    // up. The name is the only parameter we care about, so drop the rest.
+    return String(url).split('?')[0] + '?name=' + CFG.mediaThumbName;
+  }
+
+  /**
+   * Every media item on a captured page, deduped by URL.
+   *
+   * Walks the whole payload rather than only `instructions`: conversation
+   * modules and quoted posts carry real tweets too, and a saved post that
+   * quotes a photo should show both pictures.
+   */
+  function collectMedia(parsed) {
+    const out = [];
+    const seen = new Set();
+
+    const walk = (node, depth) => {
+      if (depth > 24 || node === null || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (let i = 0; i < node.length; i++) walk(node[i], depth + 1);
+        return;
+      }
+
+      const legacy = node.legacy;
+      if (legacy && typeof legacy === 'object') {
+        let list = legacy.extended_entities && legacy.extended_entities.media;
+        if (!Array.isArray(list) || list.length === 0) {
+          list = legacy.entities && legacy.entities.media;
+        }
+        const postId = node.rest_id || legacy.id_str;
+        if (Array.isArray(list) && postId) {
+          for (let i = 0; i < list.length; i++) {
+            const m = list[i];
+            const url = m && (m.media_url_https || m.media_url);
+            if (!url || seen.has(url)) continue;
+            seen.add(url);
+            out.push({ postId: String(postId), url: String(url) });
+          }
+        }
+      }
+
+      for (const k in node) walk(node[k], depth + 1);
+    };
+
+    try {
+      walk(parsed, 0);
+    } catch (_) {
+      /* a shape we did not expect is never a reason to fail a capture */
+    }
+    return out;
+  }
+
+  /** Base64 of an ArrayBuffer, in chunks so a poster does not blow the stack. */
+  function toBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const step = 0x8000;
+    for (let i = 0; i < bytes.length; i += step) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+    }
+    return btoa(binary);
+  }
+
+  /** `content-type` out of GM_xmlhttpRequest's raw header block. */
+  function mimeOf(headers, fallback) {
+    if (typeof headers !== 'string') return fallback;
+    // Split on the newline's character code rather than a string literal: this
+    // file is edited through tools that turn an escape sequence into a real
+    // line break, and a real line break inside a literal is a syntax error.
+    const lines = headers.split(String.fromCharCode(10));
+    for (let i = 0; i < lines.length; i++) {
+      const at = lines[i].toLowerCase().indexOf('content-type:');
+      if (at === -1) continue;
+      const value = lines[i].slice(at + 13).split(';')[0].trim().toLowerCase();
+      if (value) return value;
+    }
+    return fallback;
+  }
+
+  function mediaSeenSet() {
+    const list = store.getJSON('mediaSeen', []);
+    return new Set(Array.isArray(list) ? list : []);
+  }
+
+  function mediaSeenSave(set) {
+    const all = Array.from(set);
+    store.setJSON('mediaSeen', all.slice(Math.max(0, all.length - CFG.mediaSeenMax)));
+  }
+
+  function mediaWorks() {
+    return !!store.get('mediaEnabled', CFG.mediaEnabled);
+  }
+
+  /** Fetch one thumbnail and turn it into a wire record. */
+  async function fetchThumb(item) {
+    const url = thumbUrl(item.url);
+    const r = await gmRequest({
+      method: 'GET',
+      url: url,
+      responseType: 'arraybuffer',
+      timeout: 20000,
+    });
+
+    if (r.status !== 200 || !r.response) {
+      log.warn('thumbnail failed', r.status, url);
+      return null;
+    }
+    const size = r.response.byteLength || 0;
+    if (size === 0 || size > CFG.mediaMaxBytes) {
+      log.warn('thumbnail skipped, ' + size + ' bytes', url);
+      return null;
+    }
+
+    // An error page is a 200 with HTML in it often enough to be worth one
+    // check here. The app refuses these too — it is the authority — but there
+    // is no reason to spend a base64 round trip on a message.
+    const mime = mimeOf(r.responseHeaders, 'image/jpeg');
+    if (mime.indexOf('image/') !== 0) {
+      log.warn('thumbnail is not an image', mime, url);
+      return null;
+    }
+
+    return {
+      postId: item.postId,
+      url: item.url,
+      mime: mime,
+      data: toBase64(r.response),
+    };
+  }
+
+  /** Queue every thumbnail on this page that has not already been sent. */
+  function sendMedia(parsed) {
+    if (!mediaWorks()) return;
+    const items = collectMedia(parsed);
+    if (!items.length) return;
+
+    const seen = mediaSeenSet();
+    let added = 0;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (seen.has(item.url) || mediaInFlight.has(item.url)) continue;
+      mediaInFlight.add(item.url);
+      mediaQueue.push(item);
+      added++;
+    }
+    if (!added) return;
+    log.info('thumbnails queued', added);
+    drainMedia();
+  }
+
+  async function drainMedia() {
+    if (mediaRunning || mediaQueue.length === 0) return;
+    mediaRunning = true;
+
+    const seen = mediaSeenSet();
+    let stored = 0;
+
+    const worker = async () => {
+      while (mediaQueue.length > 0) {
+        const item = mediaQueue.shift();
+        try {
+          const rec = await fetchThumb(item);
+          if (rec) {
+            queue.push(
+              JSON.stringify({
+                v: CFG.wireVersion,
+                kind: 'media',
+                captured_at: Math.floor(Date.now() / 1000),
+                post_id: rec.postId,
+                url: rec.url,
+                mime: rec.mime,
+                data: rec.data,
+              })
+            );
+            // Remembered only once the app has been offered the bytes, so a
+            // navigation mid-fetch costs one retry rather than a lost image.
+            seen.add(item.url);
+            session.thumbs++;
+            stored++;
+            scheduleFlush();
+          }
+        } catch (e) {
+          log.warn('thumbnail error', e);
+        } finally {
+          mediaInFlight.delete(item.url);
+        }
+
+        if (CFG.mediaGapMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, CFG.mediaGapMs));
+        }
+      }
+    };
+
+    try {
+      const workers = [];
+      const n = Math.max(1, CFG.mediaConcurrency);
+      for (let i = 0; i < n; i++) workers.push(worker());
+      await Promise.all(workers);
+    } finally {
+      mediaRunning = false;
+      if (stored) {
+        mediaSeenSave(seen);
+        render();
+      }
+      if (mediaQueue.length > 0) drainMedia();
     }
   }
 
@@ -759,6 +1064,9 @@
           data: opts.data,
           headers: opts.headers || {},
           timeout: opts.timeout || 15000,
+          // Only used for thumbnails. Without it a binary body arrives as a
+          // lossy `responseText` and the image is corrupt before it is encoded.
+          responseType: opts.responseType || undefined,
           onload: resolve,
           onerror: function () {
             reject(new Error('loopback request failed'));
@@ -853,7 +1161,7 @@
       }
 
       while (queue.size() > 0) {
-        const batch = queue.take(CFG.batchMax);
+        const batch = queue.takeWithin(CFG.batchMax, CFG.batchMaxChars);
         const body = batch.join('\n') + '\n';
         let r;
         try {
@@ -1151,7 +1459,9 @@
       session.pages +
       ' page(s), ' +
       session.posts +
-      ' post(s) this session; ' +
+      ' post(s), ' +
+      session.thumbs +
+      ' thumbnail(s) this session; ' +
       queue.size() +
       ' waiting to send.';
     panelEl.appendChild(stat);
@@ -1219,6 +1529,17 @@
         'xitter-dl debug logging: ' + label(!!store.get('debug', false)) + ' (reload after)',
         function () {
           store.set('debug', !store.get('debug', false));
+          try {
+            alert('xitter-dl: reload the page for this to take effect.');
+          } catch (_) {}
+        }
+      );
+      // The one switch that stops this script requesting anything from X's
+      // CDN. Hooks off is not the same thing: capture would still work.
+      GM_registerMenuCommand(
+        'xitter-dl thumbnails: ' + label(mediaWorks()) + ' (reload after)',
+        function () {
+          store.set('mediaEnabled', !mediaWorks());
           try {
             alert('xitter-dl: reload the page for this to take effect.');
           } catch (_) {}

@@ -16,11 +16,13 @@
 //! sorting* — `WHERE created_at > ?`, `ORDER BY sort_index` — not for
 //! rendering.
 
-use rusqlite::{params, Connection};
+use std::collections::HashMap;
+
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::model::{PostView, Tweet};
+use crate::model::{MediaBlob, PostView, Tweet};
 use crate::x;
 
 /// Rebuild a [`Tweet`] from a stored `raw_tweet` column.
@@ -74,10 +76,106 @@ pub fn get_post(conn: &Connection, id: &str) -> Result<Option<PostView>> {
     );
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params![id])?;
-    match rows.next()? {
-        Some(row) => Ok(row_to_view(row)?),
-        None => Ok(None),
+    let mut found = match rows.next()? {
+        Some(row) => row_to_view(row)?,
+        None => None,
+    };
+    drop(rows);
+    drop(stmt);
+
+    if let Some(view) = found.as_mut() {
+        attach_blobs(conn, std::slice::from_mut(view))?;
     }
+    Ok(found)
+}
+
+/// Fill in `media[].blob` from the thumbnail table.
+///
+/// One query for the whole result set rather than one per post. The feed asks
+/// for five hundred posts at a time, and five hundred round trips to read a few
+/// kilobytes of metadata per thumbnail is how a page that should open instantly
+/// takes a visible moment.
+///
+/// Quoted posts are included: their media are real rows in the store, and a
+/// quoted photo that stayed blank while the parent's did not would read as a
+/// bug rather than a scope decision.
+pub fn attach_blobs(conn: &Connection, posts: &mut [PostView]) -> Result<()> {
+    let mut wanted: Vec<String> = Vec::new();
+    for post in posts.iter() {
+        for url in urls_of(&post.tweet) {
+            wanted.push(url);
+        }
+    }
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    wanted.sort_unstable();
+    wanted.dedup();
+
+    // Chunked because SQLite's bound-variable limit is 999 on some builds, and
+    // a page of four-image posts with quoted posts clears that comfortably.
+    let mut blobs: HashMap<String, MediaBlob> = HashMap::new();
+    for chunk in wanted.chunks(400) {
+        let placeholders = std::iter::repeat("?").take(chunk.len()).collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT url, blob_hash, mime, bytes FROM media_blobs WHERE url IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(chunk.iter()))?;
+        while let Some(row) = rows.next()? {
+            let url: String = row.get(0)?;
+            blobs.insert(
+                url,
+                MediaBlob {
+                    hash: row.get(1)?,
+                    mime: row.get(2)?,
+                    bytes: row.get(3)?,
+                },
+            );
+        }
+    }
+    if blobs.is_empty() {
+        return Ok(());
+    }
+
+    for post in posts.iter_mut() {
+        fill_blobs(&mut post.tweet, &blobs);
+    }
+    Ok(())
+}
+
+/// Every media URL a tweet can show, its own plus its quoted post's.
+fn urls_of(tweet: &Tweet) -> Vec<String> {
+    let mut out: Vec<String> = tweet.media.iter().map(|m| m.url.clone()).collect();
+    if let Some(quoted) = &tweet.quoted {
+        out.extend(quoted.media.iter().map(|m| m.url.clone()));
+    }
+    out
+}
+
+fn fill_blobs(tweet: &mut Tweet, blobs: &HashMap<String, MediaBlob>) {
+    for media in tweet.media.iter_mut() {
+        media.blob = blobs.get(&media.url).cloned();
+    }
+    if let Some(quoted) = tweet.quoted.as_mut() {
+        fill_blobs(quoted, blobs);
+    }
+}
+
+/// The MIME type of the first blob stored under `hash`.
+///
+/// The extension is not in the hash, so reading a blob back needs the type it
+/// was written as. Asking the database keeps that out of the request: the
+/// frontend passes only a hash, and a hash cannot be a path.
+pub fn blob_mime(conn: &Connection, hash: &str) -> Result<Option<String>> {
+    if !crate::media::is_sha256_hex(hash) {
+        return Ok(None);
+    }
+    Ok(conn
+        .query_row(
+            "SELECT mime FROM media_blobs WHERE blob_hash = ?1 LIMIT 1",
+            params![hash],
+            |r| r.get(0),
+        )
+        .optional()?)
 }
 
 /// The library, newest bookmark first.
@@ -106,6 +204,10 @@ pub fn list_bookmarks(conn: &Connection, limit: usize, offset: usize) -> Result<
             out.push(view);
         }
     }
+    drop(rows);
+    drop(stmt);
+
+    attach_blobs(conn, &mut out)?;
     Ok(out)
 }
 

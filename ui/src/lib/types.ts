@@ -80,6 +80,21 @@ export interface Media {
   height: number | null;
   videoUrl: string | null;
   durationMs: number | null;
+  /**
+   * The thumbnail this library holds, when it holds one.
+   *
+   * `null` means "not archived", not "failed" — the payload may name an image
+   * the app has never downloaded. Never set by the parser; the Rust read layer
+   * fills it from the content-addressed store.
+   */
+  blob: MediaBlob | null;
+}
+
+/** A stored thumbnail. `hash` is the sha256 of its bytes, and its file name. */
+export interface MediaBlob {
+  hash: string;
+  mime: string;
+  bytes: number;
 }
 
 export interface Card {
@@ -176,6 +191,8 @@ export interface ImportResult {
   new: number;
   updated: number;
   payloads: number;
+  /** Thumbnails newly stored by this import. */
+  media: number;
   problems: string[];
   library: LibraryStats;
 }

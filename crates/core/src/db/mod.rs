@@ -58,6 +58,25 @@ impl Library {
         self.path.as_deref()
     }
 
+    /// Where this library's thumbnails live: `media/` beside the database.
+    ///
+    /// Beside the database and not inside a build, because the same file is
+    /// opened by more than one binary — the installed exe and a dev build —
+    /// and a per-build cache would mean each of them downloaded what the other
+    /// already had. `None` for an in-memory library, which has no directory to
+    /// put anything in.
+    pub fn media_dir(&self) -> Option<PathBuf> {
+        self.path
+            .as_deref()
+            .and_then(|p| p.parent())
+            .map(|dir| dir.join("media"))
+    }
+
+    /// The thumbnail store for this library, when it has one.
+    pub fn media_store(&self) -> Option<crate::media::MediaStore> {
+        self.media_dir().map(crate::media::MediaStore::new)
+    }
+
     /// Total bookmarks held. Cheap enough to call on every UI refresh.
     pub fn count_bookmarks(&self) -> Result<i64> {
         Ok(self

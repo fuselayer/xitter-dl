@@ -37,6 +37,7 @@ const BOOKMARKS_URL = (hash) =>
   `https://x.com/i/api/graphql/${hash}/Bookmarks?variables=%7B%7D&features=%7B%7D`;
 
 const settle = () => new Promise((r) => setTimeout(r, 20));
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Build a world containing the script and just enough browser to run it.
@@ -44,7 +45,7 @@ const settle = () => new Promise((r) => setTimeout(r, 20));
  * `fetchImpl` is installed *before* the script evaluates, because the script
  * captures `window.fetch` at hook time — as it must, to run at document-start.
  */
-function makeWorld({ fetchImpl, xhrImpl } = {}) {
+function makeWorld({ fetchImpl, xhrImpl, media } = {}) {
   const values = new Map();
   const requests = [];
 
@@ -88,9 +89,25 @@ function makeWorld({ fetchImpl, xhrImpl } = {}) {
         url: opts.url,
         headers: opts.headers || {},
         data: opts.data,
+        responseType: opts.responseType,
       });
       setTimeout(() => {
         try {
+          // A CDN answer, keyed by the URL as requested (query and all), so a
+          // test can assert which variant was asked for.
+          if (media && opts.url.indexOf('pbs.twimg.com') !== -1) {
+            const answer = media[opts.url];
+            if (!answer) {
+              opts.onload({ status: 404, responseHeaders: 'content-type: text/plain' });
+              return;
+            }
+            opts.onload({
+              status: 200,
+              response: answer.bytes ? Uint8Array.from(answer.bytes).buffer : answer,
+              responseHeaders: 'content-type: ' + (answer.mime || 'image/jpeg'),
+            });
+            return;
+          }
           if (opts.url.includes('/v1/hello')) {
             const probe = new URL(opts.url).searchParams.get('probe');
             opts.onload({
@@ -118,6 +135,10 @@ function makeWorld({ fetchImpl, xhrImpl } = {}) {
     setInterval: () => 0,
     clearInterval: () => {},
     URL,
+    // A browser has these; a bare VM context does not, and the thumbnail
+    // encoder uses one. Missing here looked exactly like a fetch failure.
+    btoa,
+    atob,
   });
 
   vm.runInContext(SCRIPT, ctx);
@@ -390,4 +411,166 @@ test('captures are buffered, not dropped, while the app is closed', async () => 
 
   assert.equal(world.requests.length, 0, 'nothing should be sent without a secret');
   assert.equal(queued(world.values).length, 1, 'and it must still be queued');
+});
+
+// ── thumbnails ───────────────────────────────────────────────────────────────
+
+const PHOTO = 'https://pbs.twimg.com/media/AAA.jpg';
+const POSTER = 'https://pbs.twimg.com/amplify_video_thumb/1/img/BBB.jpg';
+
+/** A bookmarks page carrying one tweet with the media given. */
+function pageWithMedia(media) {
+  return JSON.stringify({
+    data: {
+      bookmark_timeline_v2: {
+        timeline: {
+          instructions: [
+            {
+              type: 'TimelineAddEntries',
+              entries: [
+                {
+                  entryId: 'tweet-900001',
+                  content: {
+                    entryType: 'TimelineTimelineItem',
+                    itemContent: {
+                      tweet_results: {
+                        result: {
+                          __typename: 'Tweet',
+                          rest_id: '900001',
+                          core: {
+                            user_results: {
+                              result: { rest_id: '42', core: { name: 'Ada', screen_name: 'ada' } },
+                            },
+                          },
+                          legacy: {
+                            id_str: '900001',
+                            full_text: 'a post with media',
+                            entities: { urls: [], media: media },
+                            extended_entities: { media: media },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  });
+}
+
+const TWO_ITEMS = [
+  { type: 'photo', media_url_https: PHOTO },
+  { type: 'video', media_url_https: POSTER },
+];
+
+function mediaWorld(answers = {}) {
+  return makeWorld({
+    fetchImpl: async () => fakeResponse(pageWithMedia(TWO_ITEMS)),
+    media: Object.assign(
+      {
+        [PHOTO + '?name=thumb']: { bytes: [0xff, 0xd8, 0xff, 0x00, 0x11], mime: 'image/jpeg' },
+        [POSTER + '?name=thumb']: { bytes: [0xff, 0xd8, 0xff, 0x01], mime: 'image/jpeg' },
+      },
+      answers
+    ),
+  });
+}
+
+const thumbsRequested = (world) =>
+  world.requests.filter((r) => r.url.indexOf('pbs.twimg.com') !== -1);
+
+test('fetches a preview for every media item and queues a media record', async () => {
+  const world = mediaWorld();
+  world.win.fetch(BOOKMARKS_URL('AAA111'));
+  await wait(900);
+
+  const lines = queued(world.values);
+  assert.equal(lines[0].kind, 'page', 'the page record goes first');
+
+  const media = lines.filter((l) => l.kind === 'media');
+  assert.equal(media.length, 2, `expected two thumbnails, got ${media.length}`);
+
+  // Keyed on the payload's own bare URL, so the app can match it to the row.
+  assert.deepEqual(
+    media.map((m) => m.url).sort(),
+    [PHOTO, POSTER].sort()
+  );
+  assert.equal(media[0].post_id, '900001');
+  assert.equal(media[0].mime, 'image/jpeg');
+
+  const photo = media.find((m) => m.url === PHOTO);
+  assert.equal(
+    Buffer.from(photo.data, 'base64').toString('hex'),
+    'ffd8ff0011',
+    'the bytes must survive the base64 round trip'
+  );
+});
+
+test('asks for ?name=thumb, and reads the body as binary', async () => {
+  const world = mediaWorld();
+  world.win.fetch(BOOKMARKS_URL('AAA111'));
+  await wait(900);
+
+  const thumbs = thumbsRequested(world);
+  assert.equal(thumbs.length, 2);
+  for (const r of thumbs) {
+    assert.match(r.url, /\?name=thumb$/, 'must ask for the smallest variant');
+    // Without this a text body mangles the image before it is encoded.
+    assert.equal(r.responseType, 'arraybuffer');
+  }
+});
+
+test('does not fetch a preview it has already sent', async () => {
+  const world = mediaWorld();
+  world.win.fetch(BOOKMARKS_URL('AAA111'));
+  await wait(900);
+
+  const before = thumbsRequested(world).length;
+  world.win.fetch(BOOKMARKS_URL('AAA111'));
+  await wait(600);
+
+  assert.equal(thumbsRequested(world).length, before, 'a re-scroll must cost no requests');
+  assert.equal(queued(world.values).filter((l) => l.kind === 'media').length, 2);
+});
+
+test('runs the preview pass on a page whose bytes are already captured', async () => {
+  // The backfill path. Re-opening the bookmarks page delivers the same page
+  // bodies, which `firstSight` rejects — and those posts are exactly the ones
+  // that still need previews. With the URL memory gone (a fresh browser), the
+  // pass must run anyway.
+  const world = mediaWorld();
+  world.win.fetch(BOOKMARKS_URL('AAA111'));
+  await wait(900);
+
+  world.values.delete('mediaSeen');
+  world.win.fetch(BOOKMARKS_URL('AAA111'));
+  await wait(900);
+
+  const lines = queued(world.values);
+  assert.equal(lines.filter((l) => l.kind === 'page').length, 1, 'the page is a repeat');
+  assert.equal(
+    lines.filter((l) => l.kind === 'media').length,
+    4,
+    'but both previews were offered again'
+  );
+});
+
+test('drops a preview that comes back as an error page', async () => {
+  const world = makeWorld({
+    fetchImpl: async () => fakeResponse(pageWithMedia([TWO_ITEMS[0]])),
+    media: { [PHOTO + '?name=thumb']: { bytes: [0x3c, 0x68, 0x74], mime: 'text/html' } },
+  });
+
+  world.win.fetch(BOOKMARKS_URL('AAA111'));
+  await wait(900);
+
+  assert.equal(
+    queued(world.values).filter((l) => l.kind === 'media').length,
+    0,
+    'an HTML body is not a thumbnail'
+  );
 });

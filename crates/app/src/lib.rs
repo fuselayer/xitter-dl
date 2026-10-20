@@ -131,6 +131,8 @@ pub struct ImportResult {
     new: usize,
     updated: usize,
     payloads: usize,
+    /// Thumbnails newly stored by this import.
+    media: usize,
     problems: Vec<String>,
     library: read::LibraryStats,
 }
@@ -147,6 +149,7 @@ fn summarize(
         new: stats.new,
         updated: stats.updated,
         payloads: stats.payloads,
+        media: stats.media,
         problems,
         library: read::stats(conn).map_err(err)?,
     })
@@ -183,6 +186,40 @@ fn stats(state: State<'_, AppState>) -> Result<read::LibraryStats, String> {
 #[tauri::command]
 fn library_path(state: State<'_, AppState>) -> String {
     state.db_path().display().to_string()
+}
+
+/// Read one stored thumbnail and hand it to the webview as a `data:` URL.
+///
+/// ## Why a hash, and not a post id
+///
+/// Thumbnails are content-addressed, so the hash *is* the identity — the same
+/// picture on twenty bookmarks is one file and one call. Passing the hash also
+/// makes the path guard trivial: the argument is either 64 lowercase hex digits
+/// or it is refused before anything touches the filesystem, so the webview
+/// cannot name a file it should not read even if it were compromised. The MIME
+/// type, which decides the extension, comes from the database rather than the
+/// caller, so the extension is not attacker-chosen either.
+///
+/// ## Why `data:` and not `asset:`
+///
+/// The app's CSP is `img-src 'self' data:` and has no `asset:` entry. Widening
+/// it would hand the webview a file-read capability for the whole library
+/// directory; a command that returns the bytes of one hash does the same job
+/// with none of that. It also keeps the read on the Rust side of the seam,
+/// where every path in this app is built.
+#[tauri::command]
+fn media_thumb(state: State<'_, AppState>, hash: String) -> Result<Option<String>, String> {
+    if !xdl_core::media::is_sha256_hex(&hash) {
+        return Ok(None);
+    }
+    let lib = state.reader()?;
+    let Some(mime) = read::blob_mime(lib.conn(), &hash).map_err(err)? else {
+        return Ok(None);
+    };
+    let Some(store) = lib.media_store() else {
+        return Ok(None);
+    };
+    store.data_url(&hash, &mime).map_err(err)
 }
 
 // ── write commands ───────────────────────────────────────────────────────────
@@ -505,6 +542,7 @@ pub fn run() {
             search,
             stats,
             library_path,
+            media_thumb,
             import_json,
             import_path,
             open_external,

@@ -340,6 +340,9 @@ fn parse_media(legacy: &Value) -> Vec<Media> {
                 height,
                 video_url,
                 duration_ms: i(m, "/video_info/duration_millis"),
+                // The parser only ever describes what X sent. Local bytes are
+                // attached by `db::read`.
+                blob: None,
             })
         })
         .collect()

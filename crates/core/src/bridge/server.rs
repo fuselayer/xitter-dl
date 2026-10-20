@@ -81,6 +81,8 @@ pub struct CaptureReport {
     pub seen: usize,
     pub new: usize,
     pub updated: usize,
+    /// Thumbnails stored from this batch.
+    pub media: usize,
     pub problems: Vec<String>,
 }
 
@@ -95,6 +97,7 @@ impl CaptureReport {
             seen: s.stats.seen,
             new: s.stats.new,
             updated: s.stats.updated,
+            media: s.stats.media,
             problems,
         }
     }

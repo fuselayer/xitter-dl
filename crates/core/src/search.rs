@@ -206,7 +206,8 @@ fn load_hits(
         return Ok(Vec::new());
     }
 
-    let mut out = Vec::with_capacity(ordered.len());
+    let mut views: Vec<PostView> = Vec::with_capacity(ordered.len());
+    let mut meta: Vec<(f64, Vec<String>, Option<String>)> = Vec::with_capacity(ordered.len());
     let mut stmt = conn.prepare(
         "SELECT p.id, p.raw_tweet, p.first_seen_at, p.last_seen_at, p.removed_at, p.source,
                 b.bookmarked_at, b.sort_index
@@ -227,21 +228,34 @@ fn load_hits(
             continue;
         };
 
-        out.push(SearchHit {
-            post: PostView {
-                tweet,
-                bookmarked_at: row.get(6)?,
-                sort_index: row.get(7)?,
-                first_seen_at: row.get(2)?,
-                last_seen_at: row.get(3)?,
-                removed_at: row.get(4)?,
-                source: row.get(5)?,
-            },
+        views.push(PostView {
+            tweet,
+            bookmarked_at: row.get(6)?,
+            sort_index: row.get(7)?,
+            first_seen_at: row.get(2)?,
+            last_seen_at: row.get(3)?,
+            removed_at: row.get(4)?,
+            source: row.get(5)?,
+        });
+        meta.push((score, matched, snippet));
+    }
+    drop(stmt);
+
+    // One blob query for the whole result set, exactly as `list_bookmarks`
+    // does — a hit list without its thumbnails would be a second, quieter
+    // rendering rule.
+    crate::db::read::attach_blobs(conn, &mut views)?;
+
+    let out = views
+        .into_iter()
+        .zip(meta)
+        .map(|(post, (score, matched, snippet))| SearchHit {
+            post,
             score,
             snippet,
             matched,
-        });
-    }
+        })
+        .collect();
 
     Ok(out)
 }

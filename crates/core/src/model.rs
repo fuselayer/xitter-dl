@@ -132,6 +132,25 @@ pub struct Media {
     /// Progressive MP4 for video/GIF, highest bitrate variant in the payload.
     pub video_url: Option<String>,
     pub duration_ms: Option<i64>,
+    /// The thumbnail this library actually holds, when it holds one.
+    ///
+    /// Never set by the payload parser — X sends no bytes. `db::read` fills it
+    /// from the `media_blobs` table on the way out, which is why it lives on
+    /// `Media` rather than in a parallel array the frontend has to zip: a
+    /// photo, a quoted photo and a video poster then render through one
+    /// component with one rule.
+    #[serde(default)]
+    pub blob: Option<MediaBlob>,
+}
+
+/// A stored thumbnail, keyed by content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaBlob {
+    /// SHA-256 of the bytes, lowercase hex. Also the file name.
+    pub hash: String,
+    pub mime: String,
+    pub bytes: i64,
 }
 
 impl Media {
@@ -262,6 +281,7 @@ mod tests {
             height: Some(100),
             video_url: None,
             duration_ms: None,
+            blob: None,
         };
         assert_eq!(m.aspect_ratio(), None);
 

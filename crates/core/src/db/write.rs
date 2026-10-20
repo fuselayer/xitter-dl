@@ -36,6 +36,8 @@ pub struct IngestStats {
     pub updated: usize,
     /// Page envelopes written (0 or 1 per payload).
     pub payloads: usize,
+    /// Thumbnails stored (`media` records, or an import that carried blobs).
+    pub media: usize,
 }
 
 impl IngestStats {
@@ -44,6 +46,7 @@ impl IngestStats {
         self.new += other.new;
         self.updated += other.updated;
         self.payloads += other.payloads;
+        self.media += other.media;
     }
 }
 
@@ -416,6 +419,65 @@ fn media_kind_str(m: &Media) -> &'static str {
         Video => "video",
         Gif => "gif",
     }
+}
+
+/// Record that `url`'s thumbnail is the stored blob `blob_hash`.
+///
+/// Returns `true` when this is a new mapping, so the caller can count what it
+/// actually added rather than what it looked at — a re-scroll re-sends every
+/// thumbnail it sees.
+///
+/// Deliberately independent of the `media` row: `replace_media` rewrites those
+/// on every re-import, and a preview must survive that. See the note on
+/// migration 2 in `schema.rs`.
+///
+/// The hash and MIME are re-checked here even though the store already checked
+/// them. This is the last point before a value reaches a path, and a rule that
+/// lives in two places for one line each is cheaper than an incident where the
+/// other caller forgot.
+pub fn attach_media_blob(
+    conn: &Connection,
+    url: &str,
+    blob_hash: &str,
+    mime: &str,
+    bytes: i64,
+    now: i64,
+) -> Result<bool> {
+    if url.is_empty() {
+        return Err(crate::error::Error::invalid("a thumbnail needs a media URL"));
+    }
+    if !crate::media::is_sha256_hex(blob_hash) {
+        return Err(crate::error::Error::invalid(format!(
+            "refusing to attach {blob_hash:?}: not a sha256 hex digest"
+        )));
+    }
+    if !crate::media::mime_is_allowed(mime) {
+        return Err(crate::error::Error::invalid(format!(
+            "refusing to attach {mime:?}: not an allowed image type"
+        )));
+    }
+
+    let existed = conn
+        .query_row(
+            "SELECT 1 FROM media_blobs WHERE url = ?1",
+            params![url],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+
+    conn.execute(
+        "INSERT INTO media_blobs (url, blob_hash, mime, bytes, fetched_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(url) DO UPDATE SET
+            blob_hash  = excluded.blob_hash,
+            mime       = excluded.mime,
+            bytes      = excluded.bytes,
+            fetched_at = excluded.fetched_at",
+        params![url, blob_hash, mime, bytes, now],
+    )?;
+
+    Ok(!existed)
 }
 
 /// Rewrite a post's link rows from its URL entities and card.

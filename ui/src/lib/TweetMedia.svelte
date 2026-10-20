@@ -2,24 +2,24 @@
   /**
    * The media grid, laid out as X lays it out.
    *
-   * ## Why these frames are empty
+   * ## Two states per frame, and they must stay distinguishable
    *
-   * Media lives on `pbs.twimg.com`. Hot-linking it would make the webview open
-   * connections to an X-owned host — the exact thing the architecture exists
-   * to prevent, and the reason §10 locks the CSP to `self` + `asset:`. Until
-   * the M3 media pipeline caches blobs into the content-addressed store, there
-   * is nothing local to point at.
+   * An item with a `blob` draws the stored thumbnail. An item without one draws
+   * a placeholder that says so. "Not archived" and "broken" are different
+   * facts, and only one of them is worth fixing.
    *
-   * So each frame reserves the correct space from the payload's own
-   * dimensions and says plainly that the bytes are not archived yet. That is
-   * the honest version of a gap: the layout is right, the alt text is real,
-   * and nothing pretends to be an image that is not there.
+   * What lands here is the smallest variant X serves: `?name=thumb`, which is a
+   * 150×150 crop for a photo and the only poster there is for a video. So a
+   * frame that is large will look soft. That is the trade this build makes —
+   * a few kilobytes per bookmark rather than the full image — and it is why the
+   * grid stays cheap at five hundred posts.
    *
-   * Reserving space from `width`/`height` is worth doing even now — it is what
-   * stops X's timeline from jumping as images load, and it is the part of the
-   * layout most likely to be got wrong later.
+   * Reserving space from `width`/`height` is worth doing regardless — it is
+   * what stops X's timeline from jumping as images load, and it is the part of
+   * the layout most likely to be got wrong later.
    */
   import type { Media } from './types';
+  import Thumb from './Thumb.svelte';
 
   interface Props {
     media: Media[];
@@ -54,15 +54,37 @@
   }
 
   const label = $derived((m: Media) => (m.kind === 'photo' ? 'Photo' : m.kind === 'gif' ? 'GIF' : 'Video'));
+
+  /** X's duration pill sits bottom-right on any video or GIF. */
+  function duration(m: Media): string | null {
+    if (m.kind === 'photo' || !m.durationMs) return null;
+    const total = Math.round(m.durationMs / 1000);
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
+    return `${mins}:${String(secs).padStart(2, '0')}`;
+  }
 </script>
 
 <div class="media" class:one={media.length === 1} class:two={media.length === 2} class:three={media.length === 3} class:four={media.length >= 4}>
   {#each media as m, i (i)}
     <figure class="cell" style={media.length === 1 ? singleStyle(m) : ''}>
-      <div class="placeholder" role="img" aria-label={m.altText ?? `${label(m)} (no alt text)`}>
-        <span class="kind">{label(m)}{#if m.durationMs}<span class="dur"> · {Math.round(m.durationMs / 1000)}s</span>{/if}</span>
-        <span class="state">not archived yet</span>
-      </div>
+      {#if m.blob}
+        <!--
+          A stored thumbnail. It is the smallest variant X serves — 150×150 for
+          a photo, the poster for a video — so it is soft when the frame is
+          large. That is the deliberate trade: a few kilobytes per bookmark
+          instead of the full image.
+        -->
+        <Thumb blob={m.blob} alt={m.altText ?? `${label(m)} (no alt text)`} />
+        {#if duration(m)}
+          <span class="dur-badge">{duration(m)}</span>
+        {/if}
+      {:else}
+        <div class="placeholder" role="img" aria-label={m.altText ?? `${label(m)} (no alt text)`}>
+          <span class="kind">{label(m)}{#if m.durationMs}<span class="dur"> · {Math.round(m.durationMs / 1000)}s</span>{/if}</span>
+          <span class="state">not archived yet</span>
+        </div>
+      {/if}
       {#if m.altText}
         <!-- X shows a small ALT badge on any image that carries alt text. -->
         <span class="alt-badge" title={m.altText}>ALT</span>
@@ -154,5 +176,20 @@
     padding: 3px 5px;
     border-radius: 4px;
     letter-spacing: 0.02em;
+  }
+
+  /* X's own treatment for a video or GIF: the running time, bottom right. */
+  .dur-badge {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    background: rgba(0, 0, 0, 0.75);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    padding: 3px 5px;
+    border-radius: 4px;
+    font-variant-numeric: tabular-nums;
   }
 </style>

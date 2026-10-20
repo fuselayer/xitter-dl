@@ -382,11 +382,18 @@ fn cmd_show(lib: &db::Library, rest: &[String], json: bool) -> Result<()> {
         );
     }
     for m in &t.media {
+        // Whether the preview is on disk is the one thing about a media item
+        // this archive can be lying about, so the line says which.
+        let cached = match &m.blob {
+            Some(b) => format!("· cached {} KB", (b.bytes as f64 / 1024.0).round().max(1.0) as i64),
+            None => "· not archived".to_string(),
+        };
         println!(
-            "  ▢ {:?} {}x{} {}",
+            "  ▢ {:?} {}x{} {} {}",
             m.kind,
             m.width.unwrap_or(0),
             m.height.unwrap_or(0),
+            cached,
             m.alt_text.as_deref().unwrap_or("(no alt text)")
         );
     }

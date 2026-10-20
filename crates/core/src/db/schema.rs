@@ -23,7 +23,7 @@
 //!    rather than a duplication.
 
 /// Increment when `MIGRATIONS` gains an entry.
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 
 /// Migration 1 — the full initial schema.
 const M001_INITIAL: &str = r#"
@@ -265,9 +265,38 @@ END;
 -- CREATE VIRTUAL TABLE post_vecs USING vec0(post_id TEXT PRIMARY KEY, embedding FLOAT[384]);
 "#;
 
+/// Migration 2 — where a thumbnail's bytes live.
+///
+/// Keyed by the **media URL**, not by `media.id`, and that is the whole point.
+///
+/// `replace_media` deletes and rewrites every media row for a post on every
+/// re-import, so anything hanging off a row is destroyed by a single scroll of
+/// the bookmarks page. The URL is the one field that survives: it is what the
+/// payload carries, and it is stable across parser changes that reorder media.
+///
+/// Two consequences worth stating, because they are what make this table worth
+/// its own existence rather than three columns on `media`:
+///
+/// - A thumbnail can land **before** the post it belongs to. The bytes are
+///   content-addressed and keyed by URL, so nothing here depends on an import
+///   order the wire does not guarantee.
+/// - Two binaries open the same library (an installed build and a dev build).
+///   Neither can lose the other's previews, because no code path that rewrites
+///   media rows touches this table.
+const M002_MEDIA_BLOBS: &str = r#"
+CREATE TABLE media_blobs (
+  url        TEXT PRIMARY KEY,          -- media_url_https, exactly as the payload gave it
+  blob_hash  TEXT NOT NULL,             -- sha256 of the bytes, hex
+  mime       TEXT NOT NULL,
+  bytes      INTEGER NOT NULL,
+  fetched_at INTEGER NOT NULL
+);
+CREATE INDEX media_blobs_by_hash ON media_blobs(blob_hash);
+"#;
+
 /// SQL batches, applied in order. Append only — never edit a shipped entry,
 /// because a database in the wild has already run it.
-pub const MIGRATIONS: &[&str] = &[M001_INITIAL];
+pub const MIGRATIONS: &[&str] = &[M001_INITIAL, M002_MEDIA_BLOBS];
 
 #[cfg(test)]
 mod tests {
