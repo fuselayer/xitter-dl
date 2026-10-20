@@ -22,7 +22,7 @@ No API, no OAuth, no scraping service, no cloud, no account, no recurring cost.
 | Continuous capture | Not implemented |
 | Media | Thumbnails only — see [Media is thumbnails only](#media-is-thumbnails-only) |
 
-Rust: `180` tests. JavaScript: `41`.
+Rust: `181` tests. JavaScript: `41`.
 
 ---
 
@@ -359,16 +359,17 @@ whose build script passes `-DSQLITE_ENABLE_FTS5` to the C compiler. The
 
 ## Media is thumbnails only
 
-A bookmark shows the smallest preview X publishes, and nothing larger. No
-originals, no video, no audio — by design for now, because a bookmarks feed
-contains videos of hundreds of megabytes and pulling those down implicitly is a
-bandwidth and disk decision the user never made.
+A bookmark shows the preview X's own timeline draws at that slot, and nothing
+larger. No originals, no video, no audio — by design for now, because a
+bookmarks feed contains videos of hundreds of megabytes and pulling those down
+implicitly is a bandwidth and disk decision the user never made.
 
-**What is fetched.** `?name=thumb` on the payload's own `media_url_https`.
-Measured against real media: `thumb` is 150×150 at 6.3 kB, `small` 680 px at
-47 kB, `orig` 800 kB. A video's URL is its poster, and X ignores the variant
-name there — one poster at 1200×675, ~59 kB, which is what a video bookmark
-shows. The CLI prints which items are cached and which are not.
+**What is fetched.** `?name=small` on the payload's own `media_url_https`: 680 px
+wide, the size the timeline renders, 47 kB, aspect kept. Measured on real media:
+`thumb` is 150×150 (a square crop) at 6.3 kB, `120x120` is 3.3 kB, `small` 47 kB,
+`medium` 136 kB, `orig` 800 kB. A video's URL is its poster, and X ignores the
+variant name there — one poster at 1200×675, ~59 kB, which is what a video
+bookmark shows. The CLI prints which items are cached and which are not.
 
 **Who fetches it.** The userscript, never the app. The app still links no HTTP
 client and holds no X credential (PRD §4.3); the browser is the only place an

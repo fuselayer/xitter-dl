@@ -674,6 +674,36 @@ mod tests {
     }
 
     #[test]
+    fn a_sharper_preview_at_the_same_url_replaces_the_mapping_and_counts() {
+        let (l, dir) = temp_library("upgrade");
+        let url = "https://pbs.twimg.com/media/MEDIA005.jpg";
+        // The same media kept at a different size: the URL never changes, only
+        // the bytes X serves for it. It has to replace the mapping *and* count,
+        // because the file changing without the counter moving is exactly the
+        // case where the window keeps drawing the old picture until a restart.
+        let thumb = media_line(url, "image/jpeg", &JPEG, 1001).unwrap();
+        let small: [u8; 10] = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x2A];
+        let bigger = media_line(url, "image/jpeg", &small, 2002).unwrap();
+
+        let a = import_str(l.conn(), &thumb, 2000).unwrap();
+        let b = import_str(l.conn(), &bigger, 3000).unwrap();
+
+        assert_eq!(a.stats.media, 1);
+        assert_eq!(b.stats.media, 1, "a sharper preview is work, not a duplicate");
+
+        let hash: String = l
+            .conn()
+            .query_row(
+                "SELECT blob_hash FROM media_blobs WHERE url = ?1",
+                rusqlite::params![url],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hash, crate::media::sha256_hex(&small));
+        assert!(dir.join("media").join(format!("{hash}.jpg")).exists());
+    }
+
+    #[test]
     fn a_thumbnail_that_is_not_an_image_is_reported_and_not_stored() {
         let (l, dir) = temp_library("not-an-image");
 

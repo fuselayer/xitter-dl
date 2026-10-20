@@ -457,14 +457,19 @@ pub fn attach_media_blob(
         )));
     }
 
-    let existed = conn
+    // `true` means the caller did something: a URL seen for the first time, or
+    // one whose bytes changed. Re-sending identical bytes is a no-op, which is
+    // what keeps a re-scrolled page from counting as work -- but a different
+    // hash has to count, or an upgraded preview would replace the file and
+    // never tell the window to repaint.
+    let previous: Option<String> = conn
         .query_row(
-            "SELECT 1 FROM media_blobs WHERE url = ?1",
+            "SELECT blob_hash FROM media_blobs WHERE url = ?1",
             params![url],
-            |_| Ok(()),
+            |r| r.get(0),
         )
-        .optional()?
-        .is_some();
+        .optional()?;
+    let changed = previous.as_deref() != Some(blob_hash);
 
     conn.execute(
         "INSERT INTO media_blobs (url, blob_hash, mime, bytes, fetched_at)
@@ -477,7 +482,7 @@ pub fn attach_media_blob(
         params![url, blob_hash, mime, bytes, now],
     )?;
 
-    Ok(!existed)
+    Ok(changed)
 }
 
 /// Rewrite a post's link rows from its URL entities and card.

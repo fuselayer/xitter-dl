@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         xitter-dl capture
 // @namespace    https://github.com/example/xitter-dl
-// @version      0.4.0
-// @description  Files away the bookmarks X already sent your browser, with their smallest previews. No API.
+// @version      0.4.1
+// @description  Files away the bookmarks X already sent your browser, pictures included. No API.
 // @author       xitter-dl
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -28,7 +28,7 @@
  * requests to X's API. Not one. Your scrolling triggers the pagination fetches
  * it always would have; this script reads the answers on the way past.
  *
- * The single exception is thumbnails: it fetches `?name=thumb` for the media in
+ * The single exception is thumbnails: it fetches `?name=small` for the media in
  * a captured page, because the desktop app links no HTTP client at all and the
  * browser is the only place an image request can legitimately originate. Those
  * are new, small, deliberate requests to `pbs.twimg.com` — the smallest preview
@@ -64,7 +64,7 @@
   // ── configuration ──────────────────────────────────────────────────────────
 
   const CFG = {
-    scriptVersion: '0.4.0',
+    scriptVersion: '0.4.1',
     wireVersion: 1,
 
     // Matched on the operation NAME, never on the rotating doc_id hash. This
@@ -147,11 +147,12 @@
     // we construct and a request we make. Measured: `thumb` is 6 kB for a photo,
     // `small` 47 kB, `orig` 800 kB.
 
-    // The variant to ask for. `thumb` is 150×150 — a square crop — and for a
-    // video it is ignored: X serves one poster at 1200×675 for every name, so a
-    // video thumbnail is that poster. `small` (680 px wide) is the one word to
-    // change if `thumb` looks too soft.
-    mediaThumbName: 'thumb',
+    // The variant to ask for: `small` is 680 px wide and the size the timeline
+    // itself renders, so a preview matches what you saw when you saved it.
+    // `thumb` (150×150, a square crop) is a tenth of the bytes if that ever
+    // matters. For a video the name is ignored — X serves one poster at
+    // 1200×675 for every name.
+    mediaThumbName: 'small',
 
     // Off via the Tampermonkey menu, which is why it is read as a preference
     // rather than used directly.
@@ -166,7 +167,9 @@
     mediaConcurrency: 2,
     mediaGapMs: 120,
 
-    // URLs remembered so scrolling the same posts again costs nothing. Bounded
+    // URLs remembered so scrolling the same posts again costs nothing. Keyed by
+    // variant as well as by URL (`mediaKey`), so changing `mediaThumbName` asks
+    // for the pages already stored again and upgrades them in place. Bounded
     // because this lives in the userscript manager's storage.
     mediaSeenMax: 2000,
   };
@@ -620,12 +623,24 @@
   const mediaInFlight = new Set();
   let mediaRunning = false;
 
-  /** The smallest preview URL for a media item. */
+  /** The preview URL we keep for a media item. */
   function thumbUrl(url) {
     if (!CFG.mediaThumbName) return String(url);
     // The payload's URL is usually bare, but `?format=jpg&name=small` does turn
     // up. The name is the only parameter we care about, so drop the rest.
     return String(url).split('?')[0] + '?name=' + CFG.mediaThumbName;
+  }
+
+  /**
+   * The key a media item is remembered under.
+   *
+   * The variant is part of it so that changing `mediaThumbName` re-fetches
+   * media already kept at the old size — without this, every preview saved
+   * before the change would stay at the old resolution forever, because the
+   * remembered set has no idea a better one exists.
+   */
+  function mediaKey(url) {
+    return String(url) + '|' + (CFG.mediaThumbName || 'orig');
   }
 
   /**
@@ -763,8 +778,9 @@
     let added = 0;
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      if (seen.has(item.url) || mediaInFlight.has(item.url)) continue;
-      mediaInFlight.add(item.url);
+      const key = mediaKey(item.url);
+      if (seen.has(key) || mediaInFlight.has(key)) continue;
+      mediaInFlight.add(key);
       mediaQueue.push(item);
       added++;
     }
@@ -799,7 +815,7 @@
             );
             // Remembered only once the app has been offered the bytes, so a
             // navigation mid-fetch costs one retry rather than a lost image.
-            seen.add(item.url);
+            seen.add(mediaKey(item.url));
             session.thumbs++;
             stored++;
             scheduleFlush();
@@ -807,7 +823,7 @@
         } catch (e) {
           log.warn('thumbnail error', e);
         } finally {
-          mediaInFlight.delete(item.url);
+          mediaInFlight.delete(mediaKey(item.url));
         }
 
         if (CFG.mediaGapMs > 0) {

@@ -472,8 +472,8 @@ function mediaWorld(answers = {}) {
     fetchImpl: async () => fakeResponse(pageWithMedia(TWO_ITEMS)),
     media: Object.assign(
       {
-        [PHOTO + '?name=thumb']: { bytes: [0xff, 0xd8, 0xff, 0x00, 0x11], mime: 'image/jpeg' },
-        [POSTER + '?name=thumb']: { bytes: [0xff, 0xd8, 0xff, 0x01], mime: 'image/jpeg' },
+        [PHOTO + '?name=small']: { bytes: [0xff, 0xd8, 0xff, 0x00, 0x11], mime: 'image/jpeg' },
+        [POSTER + '?name=small']: { bytes: [0xff, 0xd8, 0xff, 0x01], mime: 'image/jpeg' },
       },
       answers
     ),
@@ -510,7 +510,7 @@ test('fetches a preview for every media item and queues a media record', async (
   );
 });
 
-test('asks for ?name=thumb, and reads the body as binary', async () => {
+test('asks for ?name=small, and reads the body as binary', async () => {
   const world = mediaWorld();
   world.win.fetch(BOOKMARKS_URL('AAA111'));
   await wait(900);
@@ -518,7 +518,7 @@ test('asks for ?name=thumb, and reads the body as binary', async () => {
   const thumbs = thumbsRequested(world);
   assert.equal(thumbs.length, 2);
   for (const r of thumbs) {
-    assert.match(r.url, /\?name=thumb$/, 'must ask for the smallest variant');
+    assert.match(r.url, /\?name=small$/, 'must ask for the timeline-size variant');
     // Without this a text body mangles the image before it is encoded.
     assert.equal(r.responseType, 'arraybuffer');
   }
@@ -562,7 +562,7 @@ test('runs the preview pass on a page whose bytes are already captured', async (
 test('drops a preview that comes back as an error page', async () => {
   const world = makeWorld({
     fetchImpl: async () => fakeResponse(pageWithMedia([TWO_ITEMS[0]])),
-    media: { [PHOTO + '?name=thumb']: { bytes: [0x3c, 0x68, 0x74], mime: 'text/html' } },
+    media: { [PHOTO + '?name=small']: { bytes: [0x3c, 0x68, 0x74], mime: 'text/html' } },
   });
 
   world.win.fetch(BOOKMARKS_URL('AAA111'));
