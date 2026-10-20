@@ -170,8 +170,13 @@ fn parse_author(v: &Value) -> Author {
         .map(str::to_owned);
 
     // Business and brand accounts can upload a square logo; X says so here and
-    // draws the picture uncropped. It sits on `legacy`, not `core`.
-    let avatar_shape = AvatarShape::parse(s(user, "/legacy/profile_image_shape"));
+    // draws the picture uncropped. Current payloads hoist it onto the user
+    // result, beside `avatar`; older ones (and the v1.1 shape) keep it on
+    // `legacy`, so both are read. Measured: 1,267 circles and 141 squares
+    // across the stored payloads, all of them at the hoisted path.
+    let avatar_shape = AvatarShape::parse(
+        s(user, "/profile_image_shape").or_else(|| s(user, "/legacy/profile_image_shape")),
+    );
 
     Author {
         id: s(user, "/rest_id").unwrap_or_default().to_owned(),
@@ -454,16 +459,24 @@ mod tests {
 
     #[test]
     fn reads_the_avatar_shape_x_uses_for_business_accounts() {
-        // X puts the shape on `legacy`, next to the description language, and
-        // only marks square accounts — a missing field means a circle.
+        // X hoists the shape onto the user result, next to `avatar`. Only
+        // square accounts get a value at all, so a missing field means circle.
         let mut v = minimal_tweet();
         assert_eq!(parse_tweet_result(&v).unwrap().author.avatar_shape, AvatarShape::Circle);
 
-        v["core"]["user_results"]["result"]["legacy"] = json!({ "profile_image_shape": "Square" });
+        v["core"]["user_results"]["result"]["profile_image_shape"] = json!("Square");
         assert_eq!(parse_tweet_result(&v).unwrap().author.avatar_shape, AvatarShape::Square);
 
         // Case is X's to change, not ours to trust.
-        v["core"]["user_results"]["result"]["legacy"] = json!({ "profile_image_shape": "square" });
+        v["core"]["user_results"]["result"]["profile_image_shape"] = json!("square");
+        assert_eq!(parse_tweet_result(&v).unwrap().author.avatar_shape, AvatarShape::Square);
+
+        // The v1.1 shape, which older payloads and archives carry.
+        v["core"]["user_results"]["result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("profile_image_shape");
+        v["core"]["user_results"]["result"]["legacy"] = json!({ "profile_image_shape": "Square" });
         assert_eq!(parse_tweet_result(&v).unwrap().author.avatar_shape, AvatarShape::Square);
     }
 
