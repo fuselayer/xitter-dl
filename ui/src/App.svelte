@@ -90,7 +90,10 @@
     void api
       .onBridgeEvent((event) => {
         if (!alive) return;
-        if (event.type === 'captured' && event.new > 0) void refresh();
+        // `new` is zero when a page was already stored but its thumbnails were
+        // not: a rescan adds previews to posts that are already on screen, and
+        // those have to repaint too or they wait for the next launch.
+        if (event.type === 'captured' && (event.new > 0 || event.media > 0)) void refresh();
       })
       .then((f) => {
         if (alive) off = f;
