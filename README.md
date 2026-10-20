@@ -377,7 +377,11 @@ bookmark shows. The CLI prints which items are cached and which are not.
 `avatar.image_url` as the payload named it — `profile_images` serves no
 `?name=small` — and the read layer attaches it to `author.avatarBlob` by that
 URL. One file per account, reused by every post it wrote; without one the
-avatar component draws a monogram.
+avatar component draws a monogram. Accounts X marks `Square` in
+`legacy.profile_image_shape` (business and brand accounts that uploaded a logo)
+are drawn as a slightly rounded square rather than cropped into a circle; the
+field is read from the stored raw payload, so it applies to posts already in the
+library.
 
 **Who fetches it.** The userscript, never the app. The app still links no HTTP
 client and holds no X credential (PRD §4.3); the browser is the only place an

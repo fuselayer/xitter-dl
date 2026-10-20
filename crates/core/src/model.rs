@@ -110,6 +110,31 @@ pub struct Author {
     /// payload knows whether the library holds the image.
     #[serde(default)]
     pub avatar_blob: Option<MediaBlob>,
+    /// `square` for accounts X marks that way (business and brand accounts
+    /// that uploaded a logo), `circle` for everyone else. X draws a square
+    /// avatar without cropping it to a circle, so the shape has to survive
+    /// parsing or the logo loses its corners.
+    #[serde(default)]
+    pub avatar_shape: AvatarShape,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AvatarShape {
+    #[default]
+    Circle,
+    Square,
+}
+
+impl AvatarShape {
+    /// X sends `Circle` / `Square`; anything else, and anything missing,
+    /// renders as it always has.
+    pub fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some(v) if v.eq_ignore_ascii_case("square") => AvatarShape::Square,
+            _ => AvatarShape::Circle,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

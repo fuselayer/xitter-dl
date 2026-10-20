@@ -13,8 +13,7 @@
    * shows when an avatar fails to load — so the fallback is one X already uses,
    * not an invention. The tooltip says which state you are looking at.
    */
-  import { onMount } from 'svelte';
-  import type { MediaBlob } from './types';
+  import type { AvatarShape, MediaBlob } from './types';
   import { thumbFor } from './thumbs';
 
   interface Props {
@@ -24,16 +23,25 @@
     size?: number;
     /** The stored profile picture, when the library holds one. */
     blob?: MediaBlob | null;
+    /** Business and brand accounts upload a square logo; X does not round it. */
+    shape?: AvatarShape;
   }
 
-  let { name, handle, size = 40, blob = null }: Props = $props();
+  let { name, handle, size = 40, blob = null, shape = 'circle' }: Props = $props();
 
   let src = $state<string | null>(null);
 
-  onMount(() => {
-    if (!blob) return;
+  // An effect, not a mount hook: a capture can hand this account a picture
+  // while the row is already on screen, and the row is patched rather than
+  // rebuilt. On `onMount` the newest avatar would wait for a restart.
+  $effect(() => {
+    const hash = blob?.hash;
+    if (!hash) {
+      src = null;
+      return;
+    }
     let live = true;
-    thumbFor(blob.hash).then((value) => {
+    thumbFor(hash).then((value) => {
       if (live) src = value;
     });
     return () => {
@@ -56,6 +64,7 @@
 
 <div
   class="avatar"
+  class:square={shape === 'square'}
   style="width: {size}px; height: {size}px; background: {colour}; font-size: {Math.round(size * 0.42)}px;"
   title={src ? `@${handle}` : `@${handle} — avatar not archived yet`}
   aria-hidden="true"
@@ -77,6 +86,14 @@
     flex-shrink: 0;
     user-select: none;
     overflow: hidden;
+  }
+
+  /* A business account's logo is square because it was uploaded square, so it
+     is not cropped into a circle. Percentage radius keeps the corner
+     proportional at both 40 and 20 px, and matches X's own rounding (about a
+     tenth of the side). */
+  .avatar.square {
+    border-radius: 12%;
   }
 
   img {

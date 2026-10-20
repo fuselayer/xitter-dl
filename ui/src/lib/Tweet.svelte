@@ -37,7 +37,13 @@
 
 <article class="tweet {variant}" class:removed={post.removedAt !== null}>
   <div class="gutter">
-    <Avatar name={t.author.name} handle={t.author.handle} size={40} blob={t.author.avatarBlob} />
+    <Avatar
+      name={t.author.name}
+      handle={t.author.handle}
+      size={40}
+      blob={t.author.avatarBlob}
+      shape={t.author.avatarShape}
+    />
   </div>
 
   <div class="content">
@@ -90,7 +96,13 @@
       <!-- X's quoted-post card: bordered, rounded, smaller text. -->
       <div class="quoted">
         <header class="byline small">
-          <Avatar name={t.quoted.author.name} handle={t.quoted.author.handle} size={20} blob={t.quoted.author.avatarBlob} />
+          <Avatar
+            name={t.quoted.author.name}
+            handle={t.quoted.author.handle}
+            size={20}
+            blob={t.quoted.author.avatarBlob}
+            shape={t.quoted.author.avatarShape}
+          />
           <span class="name">{t.quoted.author.name}</span>
           <Verified
             verified={t.quoted.author.verified}

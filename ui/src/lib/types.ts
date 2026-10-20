@@ -73,7 +73,14 @@ export interface Author {
    * the avatar component falls back to a monogram.
    */
   avatarBlob: MediaBlob | null;
+  /**
+   * Accounts X marks `Square` uploaded a logo rather than a portrait; the
+   * component draws those uncropped. Anything else is drawn as a circle.
+   */
+  avatarShape: AvatarShape;
 }
+
+export type AvatarShape = 'circle' | 'square';
 
 export type MediaKind = 'photo' | 'video' | 'gif';
 

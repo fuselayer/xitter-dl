@@ -14,8 +14,8 @@
 use serde_json::Value;
 
 use crate::model::{
-    Author, Card, Entities, EntityIndexUnits, Media, MediaKind, MentionEntity, Metrics, TagEntity,
-    Tweet, UrlEntity,
+    Author, AvatarShape, Card, Entities, EntityIndexUnits, Media, MediaKind, MentionEntity, Metrics,
+    TagEntity, Tweet, UrlEntity,
 };
 use crate::x::date::parse_x_timestamp;
 
@@ -169,6 +169,10 @@ fn parse_author(v: &Value) -> Author {
         .or_else(|| s(user, "/legacy/verified_type"))
         .map(str::to_owned);
 
+    // Business and brand accounts can upload a square logo; X says so here and
+    // draws the picture uncropped. It sits on `legacy`, not `core`.
+    let avatar_shape = AvatarShape::parse(s(user, "/legacy/profile_image_shape"));
+
     Author {
         id: s(user, "/rest_id").unwrap_or_default().to_owned(),
         handle,
@@ -179,6 +183,7 @@ fn parse_author(v: &Value) -> Author {
         verified_type,
         // Whether the library holds the picture is a read-time question.
         avatar_blob: None,
+        avatar_shape,
     }
 }
 
@@ -445,6 +450,21 @@ mod tests {
             },
             "views": { "count": "1234" }
         })
+    }
+
+    #[test]
+    fn reads_the_avatar_shape_x_uses_for_business_accounts() {
+        // X puts the shape on `legacy`, next to the description language, and
+        // only marks square accounts — a missing field means a circle.
+        let mut v = minimal_tweet();
+        assert_eq!(parse_tweet_result(&v).unwrap().author.avatar_shape, AvatarShape::Circle);
+
+        v["core"]["user_results"]["result"]["legacy"] = json!({ "profile_image_shape": "Square" });
+        assert_eq!(parse_tweet_result(&v).unwrap().author.avatar_shape, AvatarShape::Square);
+
+        // Case is X's to change, not ours to trust.
+        v["core"]["user_results"]["result"]["legacy"] = json!({ "profile_image_shape": "square" });
+        assert_eq!(parse_tweet_result(&v).unwrap().author.avatar_shape, AvatarShape::Square);
     }
 
     #[test]
