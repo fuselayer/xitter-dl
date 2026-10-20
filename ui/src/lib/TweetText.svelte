@@ -124,8 +124,16 @@
   }
 
   /**
-   * Resolve an entity's `[start, end)` to offsets that actually bracket
-   * `expected`, or `null` if no interpretation works.
+   * Resolve an entity's `[start, end)` to offsets that actually bracket the
+   * link, or `null` if no interpretation works.
+   *
+   * Two things are being established at once: which unit the indices are in,
+   * and whether the span is really this link. `expected` settles both when the
+   * payload is well behaved. It is not always: some payloads carry the expanded
+   * URL in `url` while the indices still bracket X's `t.co` alias, and then no
+   * unit makes the slice equal `expected` — but the slice is still unmistakably
+   * a URL, and dropping it would leave the reader with a bare `t.co` in the
+   * text. So a slice that is exactly one URL also counts.
    */
   function resolve(
     s: string,
@@ -135,13 +143,16 @@
   ): [number, number] | null {
     if (start < 0 || end > s.length || start >= end) return null;
 
+    const isUrl = (t: string) => /^https?:\/\/\S+$/.test(t);
+    const ok = (t: string) => t === expected || isUrl(t);
+
     // Interpretation 1: indices are already UTF-16 offsets.
-    if (s.slice(start, end) === expected) return [start, end];
+    if (ok(s.slice(start, end))) return [start, end];
 
     // Interpretation 2: indices are code points.
     const a = codePointToUtf16(s, start);
     const b = codePointToUtf16(s, end);
-    if (a < b && s.slice(a, b) === expected) return [a, b];
+    if (a < b && ok(s.slice(a, b))) return [a, b];
 
     return null;
   }
@@ -237,6 +248,23 @@
       cursor = f.end;
     }
     if (cursor < text.length) out.push({ kind: 'text', text: text.slice(cursor) });
+
+    // X appends the post's own media link (`https://t.co/<id>`) to the text and
+    // never draws it. Usually it arrives as an entity, which `isMediaSelfLink`
+    // drops above — but not always: some payloads leave it as bare text with no
+    // entity at all. An unlinked `t.co` at the very end of a post that has media
+    // can only be that link, so it goes too.
+    if (hasMedia) {
+      const last = out[out.length - 1];
+      if (last !== undefined && last.kind === 'text') {
+        const trimmed = last.text.replace(/\s*https:\/\/t\.co\/[A-Za-z0-9]+$/, '');
+        if (trimmed !== last.text) {
+          if (trimmed) out[out.length - 1] = { kind: 'text', text: trimmed };
+          else out.pop();
+        }
+      }
+    }
+
     return out;
   });
 
