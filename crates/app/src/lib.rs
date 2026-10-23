@@ -331,6 +331,26 @@ fn inference_config(state: State<'_, AppState>) -> Result<InferenceView, String>
 ///
 /// An empty key string is not "leave it alone": it is a deliberate clear, which
 /// is why the UI sends `None` when the field was untouched.
+/// Whether *this* provider has a key, and the last four characters.
+///
+/// The panel used to answer this from the saved settings, which is the same
+/// thing only while the dropdown still matches what was saved. Selecting a new
+/// provider showed the old provider's hint, which reads as "your key is
+/// already here" and is exactly the question a person asks before typing a
+/// second one.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyStatus {
+    has_key: bool,
+    hint: Option<String>,
+}
+
+#[tauri::command]
+fn inference_key_status(provider: String) -> Result<KeyStatus, String> {
+    let hint = keys::get(&provider).map(|key| keys::hint(&key));
+    Ok(KeyStatus { has_key: hint.is_some(), hint })
+}
+
 #[tauri::command]
 fn inference_save(
     state: State<'_, AppState>,
@@ -971,6 +991,7 @@ pub fn run() {
             category_move,
             category_delete,
             inference_config,
+            inference_key_status,
             inference_save,
             inference_test,
             classify_start,

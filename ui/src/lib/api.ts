@@ -249,6 +249,13 @@ export async function inferenceConfig(): Promise<InferenceView> {
   return invoke<InferenceView>('inference_config');
 }
 
+/** Whether a given provider has a key stored. Per provider id, not per panel. */
+export async function inferenceKeyStatus(
+  provider: string,
+): Promise<{ hasKey: boolean; hint: string | null }> {
+  return invoke('inference_key_status', { provider });
+}
+
 export async function inferenceSave(
   provider: string,
   baseUrl: string,

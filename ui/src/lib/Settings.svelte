@@ -27,6 +27,15 @@
   let baseUrl = $state('');
   let model = $state('');
   let keyDraft = $state('');
+  /**
+   * Key state of the *selected* provider.
+   *
+   * `view` describes what is saved; the dropdown can point somewhere else. Two
+   * different providers, two different answers, and showing the saved one next
+   * to the selected one is how "BeatAPI" came to display the OpenCode hint.
+   */
+  let keyState = $state<{ hasKey: boolean; hint: string | null } | null>(null);
+  const keyInfo = $derived(keyState ?? { hasKey: false, hint: null });
   let clearKey = $state(false);
   let sendImages = $state(true);
   let busy = $state(false);
@@ -48,6 +57,7 @@
       .inferenceConfig()
       .then((v) => {
         if (!alive) return;
+        keyState = { hasKey: v.hasKey, hint: v.keyHint };
         view = v;
         providerId = v.provider.id;
         baseUrl = v.provider.baseUrl;
@@ -64,6 +74,20 @@
 
   function chooseProvider(id: string) {
     providerId = id;
+    // A key typed for one provider must never be saved under another: the
+    // dropdown is a switch of account, not just of endpoint.
+    keyDraft = '';
+    clearKey = false;
+    keyState = null;
+    const chosen = id;
+    void api
+      .inferenceKeyStatus(chosen)
+      .then((status) => {
+        if (providerId === chosen) keyState = status;
+      })
+      .catch(() => {
+        /* the panel can still save a key; the hint is only decoration */
+      });
     const p = view?.presets.find((x) => x.id === id);
     if (!p) return;
     // Switching providers is a switch of *host and model*, not just a label:
@@ -83,6 +107,7 @@
       const key = clearKey ? '' : keyDraft.trim() ? keyDraft.trim() : null;
       const next = await api.inferenceSave(providerId, baseUrl, model, key, sendImages);
       view = next;
+      keyState = { hasKey: next.hasKey, hint: next.keyHint };
       keyDraft = '';
       clearKey = false;
       onsaved(next);
@@ -172,8 +197,8 @@
             bind:value={keyDraft}
             spellcheck="false"
             autocomplete="off"
-            placeholder={view.hasKey && !clearKey
-              ? `Saved ${view.keyHint ?? ''} — type to replace`
+            placeholder={keyInfo.hasKey && !clearKey
+              ? `Saved ${keyInfo.hint ?? ''} — type to replace`
               : 'Paste the key from your provider'}
           />
         </label>
@@ -182,8 +207,8 @@
           {#if clearKey}
             <span class="warn">The key will be removed when you save.</span>
             <button class="link" onclick={() => (clearKey = false)}>Undo</button>
-          {:else if view.hasKey}
-            <span class="ok">Key saved {view.keyHint ?? ''}</span>
+          {:else if keyInfo.hasKey}
+            <span class="ok">Key saved {keyInfo.hint ?? ''}</span>
             <button class="link" onclick={() => (clearKey = true)}>Forget key</button>
           {:else}
             <span class="warn">No key saved yet.</span>
@@ -210,7 +235,7 @@
         {/if}
 
         <footer>
-          <button class="ghost" onclick={runTest} disabled={busy || (!view.hasKey && !keyDraft.trim())}>
+          <button class="ghost" onclick={runTest} disabled={busy || (!keyInfo.hasKey && !keyDraft.trim())}>
             Test
           </button>
           <span class="spacer"></span>
