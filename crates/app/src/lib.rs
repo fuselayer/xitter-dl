@@ -458,6 +458,20 @@ fn classify_start(
             crumb(&db_path, &format!("{} folders", cats.len()));
 
             let client = Client::new(settings.provider.clone(), key);
+
+            // One cheap request before a hundred expensive ones. If the host is
+            // unreachable, the key lapsed or a quota is spent, this fails in
+            // seconds with the provider's own words instead of leaving a run
+            // to discover it three minutes into the first wave.
+            // Informative, not a gate: if the probe itself is refused for a
+            // reason unrelated to access (a model that does not answer `noul`,
+            // say), refusing to run would turn a diagnostic into a dead
+            // button. A genuinely dead host fails the first wave in seconds.
+            match client.test() {
+                Ok(probe) => crumb(&db_path, &format!("provider ok in {} ms", probe.latency_ms)),
+                Err(e) => crumb(&db_path, &format!("probe failed: {e}")),
+            }
+
             let report = classify(
                 lib.conn(),
                 &media_dir,

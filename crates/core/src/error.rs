@@ -54,6 +54,13 @@ pub enum Error {
     /// network is down" want different words in front of a human.
     #[error("{0}")]
     Network(String),
+
+    /// The provider asked us to slow down. Separate from [`Error::Network`]
+    /// because retrying it four times with a sixty-second wait each is how a
+    /// run that could have paused for thirty seconds instead looks like a
+    /// frozen window.
+    #[error("{0}")]
+    RateLimited(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

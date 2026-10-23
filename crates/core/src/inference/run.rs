@@ -191,15 +191,20 @@ pub fn run(
                     continue;
                 }
                 handles.push(scope.spawn(move || {
-                    slice
-                        .into_iter()
-                        .map(|cand| {
-                            (
-                                cand.id.clone(),
-                                classify_one(client, media_dir, cand, &criteria, opts.send_images),
-                            )
-                        })
-                        .collect::<Vec<_>>()
+                    let mut done = Vec::with_capacity(slice.len());
+                    for cand in slice {
+                        // Stopping is worth checking here too: a wave is sixteen
+                        // requests, and making the user wait for all of them
+                        // after pressing Stop is not stopping.
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        done.push((
+                            cand.id.clone(),
+                            classify_one(client, media_dir, cand, &criteria, opts.send_images),
+                        ));
+                    }
+                    done
                 }));
             }
             handles
@@ -216,6 +221,11 @@ pub fn run(
         // run from noticing that every wave since has been rejected.
         let mut wave_filed = 0u64;
         let mut wave_failed = 0u64;
+
+        append_log(
+            media_dir,
+            &serde_json::json!({ "at": crate::now(), "wave": wave.len(), "begin": true }),
+        );
 
         for (post_id, outcome) in outcomes {
             done += 1;
@@ -249,14 +259,29 @@ pub fn run(
                 Err(e) => {
                     wave_failed += 1;
                     report.failed += 1;
+                    let message = e.to_string();
+                    append_log(
+                        media_dir,
+                        &serde_json::json!({
+                            "at": crate::now(),
+                            "post": post_id,
+                            "error": message.chars().take(300).collect::<String>(),
+                        }),
+                    );
                     if report.first_error.is_none() {
-                        report.first_error = Some(e.to_string());
+                        report.first_error = Some(message);
                     }
                 }
             }
+            // One event per post, not per wave. A wave is sixteen requests, and
+            // silence for sixteen of them is exactly what "it froze" looks like.
+            progress(&Progress { done, considered, failed: report.failed });
         }
 
-        progress(&Progress { done, considered, failed: report.failed });
+        if cancel.load(Ordering::Relaxed) {
+            report.cancelled = true;
+            break;
+        }
         append_log(
             media_dir,
             &serde_json::json!({

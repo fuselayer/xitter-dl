@@ -34,6 +34,10 @@ const MAX_WAIT: Duration = Duration::from_secs(60);
 /// window, and still faster than reading.
 const MIN_INTERVAL: Duration = Duration::from_millis(320);
 
+/// The longest a single post waits inside the client for a rate limit to
+/// clear. The run's own pause handles the real window.
+const RATE_WAIT: Duration = Duration::from_secs(3);
+
 pub struct Client {
     agent: ureq::Agent,
     key: String,
@@ -46,6 +50,7 @@ pub struct Client {
 /// help.
 enum Failure {
     Retry { message: String, wait: Option<Duration> },
+    RateLimited { message: String, wait: Option<Duration> },
     Fatal(String),
 }
 
@@ -114,6 +119,16 @@ impl Client {
                     let pause = wait.unwrap_or_else(|| Duration::from_millis(800 << attempt)).min(MAX_WAIT);
                     std::thread::sleep(pause);
                 }
+                Err(Failure::RateLimited { message, wait }) => {
+                    // One short retry, then hand it up: the run pauses at the
+                    // wave boundary, where a pause costs one wave instead of
+                    // one per post.
+                    if attempt >= 2 {
+                        return Err(Error::RateLimited(message));
+                    }
+                    let pause = wait.unwrap_or(Duration::from_millis(900));
+                    std::thread::sleep(pause.min(RATE_WAIT));
+                }
                 Err(Failure::Fatal(message)) => return Err(Error::Network(message)),
             }
         }
@@ -150,6 +165,14 @@ impl Client {
                     }
                     let pause = wait.unwrap_or_else(|| Duration::from_millis(800 << attempt)).min(MAX_WAIT);
                     std::thread::sleep(pause);
+                }
+                Err(Failure::RateLimited { message, wait }) => {
+                    // The probe is already the "is this working at all"
+                    // question; waiting a minute to ask it again is not.
+                    if attempt >= 2 {
+                        return Err(Error::RateLimited(message));
+                    }
+                    std::thread::sleep(wait.unwrap_or(Duration::from_millis(900)).min(RATE_WAIT));
                 }
                 Err(Failure::Fatal(message)) => return Err(Error::Network(message)),
             }
@@ -194,7 +217,9 @@ impl Client {
                     .map(Duration::from_secs);
                 let text = response.into_string().unwrap_or_default();
                 let message = describe_status(code, &text, &self.config.base_url);
-                return Err(if retryable(code) {
+                return Err(if code == 429 {
+                    Failure::RateLimited { message, wait: retry_after }
+                } else if retryable(code) {
                     Failure::Retry { message, wait: retry_after }
                 } else {
                     Failure::Fatal(message)
@@ -227,7 +252,7 @@ pub struct TestResult {
 }
 
 fn retryable(code: u16) -> bool {
-    code == 408 || code == 425 || code == 429 || (500..600).contains(&code)
+    code == 408 || code == 425 || (500..600).contains(&code)
 }
 
 /// Turn an HTTP failure into a sentence a person can act on.
