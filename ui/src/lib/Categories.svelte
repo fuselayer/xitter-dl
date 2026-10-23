@@ -8,14 +8,13 @@
    * put it", and lets a folder hold folders. The window draws the flattened
    * tree the backend returns — one indent per level, drag order preserved.
    *
-   * ## The goo
+   * ## Dragging
    *
-   * `liquid-gooey` is React, so this is the same effect built on the primitive
-   * it wraps: a blurred layer whose alpha is pushed through a steep contrast
-   * matrix, which turns overlapping shapes into one silhouette with a neck
-   * between them. The SVG filter lives here and is applied only while dragging;
-   * at rest the rows are ordinary rects, and the labels never pass through the
-   * filter, so text stays crisp.
+   * A pointer drag with no effect layer: the row dims, a plain pill with its
+   * name follows the cursor, the row you are over shows an inset ring when the
+   * drop means "inside", and a two-pixel line marks where a reorder would land.
+   * That is the whole vocabulary — the tree is the thing being edited, so it
+   * should look like itself while you edit it.
    *
    * ## Drag semantics
    *
@@ -317,16 +316,12 @@
     /** Panel origin at the moment the drag started. */
     ox: number;
     oy: number;
-    /** Client rects of every row at drag start. */
+    /** Client rects of every row at drag start, for hit testing. */
     boxes: Box[];
-    width: number;
-    height: number;
   }
 
   let pending = $state<{ id: string; x: number; y: number } | null>(null);
   let drag = $state<Drag | null>(null);
-  /** The dragged row's own size, captured before it leaves the list. */
-  let drag0: { width: number; height: number } | null = null;
   let hover = $state<{ id: string; mode: 'into' | 'before' | 'after' } | null>(null);
   let suppressClick = false;
 
@@ -377,12 +372,8 @@
     const panel = panelEl.getBoundingClientRect();
     const boxes: Box[] = [];
     for (const [key, el] of Object.entries(rowEl)) {
+      if (key === id) continue;
       const r = el.getBoundingClientRect();
-      if (key === id) {
-        // The floating pill stands in for this row.
-        drag0 = { width: r.width, height: r.height };
-        continue;
-      }
       boxes.push({ id: key, top: r.top, left: r.left, width: r.width, height: r.height });
     }
     drag = {
@@ -393,10 +384,7 @@
       ox: panel.left,
       oy: panel.top,
       boxes,
-      width: drag0?.width ?? 200,
-      height: drag0?.height ?? 32,
     };
-    drag0 = null;
     hover = null;
     pending = null;
     suppressClick = true;
@@ -471,24 +459,6 @@
 </script>
 
 <svelte:window onpointermove={onMove} onpointerup={onUp} />
-
-<!-- The filter: blur, then a steep alpha ramp. The result is a single
-     silhouette wherever two shapes come close, which is the whole trick. -->
-<svg class="defs" aria-hidden="true">
-  <defs>
-    <filter id="cat-goo">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur" />
-      <feColorMatrix
-        in="blur"
-        mode="matrix"
-        values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 19 -9"
-        result="goo"
-      />
-      <!-- Only the goo result: blending the source back over it would hide
-           the neck that forms where two shapes meet. -->
-    </filter>
-  </defs>
-</svg>
 
 <section class="panel" bind:this={panelEl}>
   <header class="head" onpointerup={onHeaderPointerUp} role="presentation">
@@ -665,38 +635,23 @@
   </div>
 
   {#if drag}
-    <div class="goo" style="filter: url(#cat-goo)">
-      {#each drag.boxes as b (b.id)}
-        <div
-          class="blob"
-          class:absorb={hover?.id === b.id && hover.mode === 'into'}
-          style="left: {b.left - drag.ox}px; top: {b.top - drag.oy}px; width: {b.width}px; height: {b.height}px"
-        ></div>
-      {/each}
-      <div
-        class="blob floating"
-        style="width: {drag.width}px; height: {drag.height}px; transform: translate3d({drag.x -
-          drag.ox -
-          drag.width / 2}px, {drag.y - drag.oy - drag.height / 2}px, 0)"
-      ></div>
-      {#if dropLine}
-        <div
-          class="ins"
-          style="left: {dropLine.left}px; top: {dropLine.top}px; width: {dropLine.width}px"
-        ></div>
-      {/if}
+    <div
+      class="ghost"
+      style="left: {drag.x - drag.ox}px; top: {drag.y - drag.oy}px"
+      aria-hidden="true"
+    >
+      {drag.label}
     </div>
+    {#if dropLine}
+      <div
+        class="ins"
+        style="left: {dropLine.left}px; top: {dropLine.top}px; width: {dropLine.width}px"
+      ></div>
+    {/if}
   {/if}
 </section>
 
 <style>
-  .defs {
-    position: absolute;
-    width: 0;
-    height: 0;
-    overflow: hidden;
-  }
-
   .panel {
     position: relative;
     background: var(--bg-elevated);
@@ -909,32 +864,25 @@
     line-height: 1.4;
   }
 
-  /* ── the goo layer ────────────────────────────────────────────────────── */
+  /* ── drag feedback ────────────────────────────────────────────────────── */
 
-  .goo {
+  /* The thing in your hand: the row's own name, nothing else. */
+  .ghost {
     position: absolute;
-    inset: 0;
+    z-index: 2;
+    transform: translate(-50%, -50%);
     pointer-events: none;
-    border-radius: 16px;
+    max-width: 220px;
+    padding: 5px 10px;
+    border-radius: 9999px;
+    border: 1px solid var(--accent);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-size: 12px;
+    line-height: 1.3;
+    white-space: nowrap;
     overflow: hidden;
-  }
-
-  .blob {
-    position: absolute;
-    border-radius: 10px;
-    /* Opaque, because the filter works on alpha: a translucent fill would be
-       ramped to nothing by the contrast matrix and the shape would vanish.
-       Mixed from the text colour so it reads on every theme. */
-    background: color-mix(in srgb, var(--text-primary) 10%, var(--bg-elevated));
-    transition: transform 120ms ease-out;
-  }
-
-  .blob.absorb {
-    transform: scale(1.04);
-  }
-
-  .blob.floating {
-    opacity: 0.92;
+    text-overflow: ellipsis;
   }
 
   .ins {
@@ -1044,10 +992,8 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .goo {
-      filter: none !important;
-    }
-    .blob {
+    .row,
+    .ghost {
       transition: none;
     }
   }
