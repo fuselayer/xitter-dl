@@ -40,9 +40,13 @@
     onsettings: () => void;
     /** Changes when the settings were edited, so the panel re-reads the key. */
     revision: number;
+    /** Fired after any edit, so the strip at the top of the feed re-reads. */
+    onchanged: () => void;
+    /** The strip's `+`: opens this panel's form instead of a second one. */
+    addRequest: number;
   }
 
-  let { active, total, onpick, onsettings, revision }: Props = $props();
+  let { active, total, onpick, onsettings, revision, onchanged, addRequest }: Props = $props();
 
   let cats = $state<Category[]>([]);
   let error = $state<string | null>(null);
@@ -96,6 +100,12 @@
     error = null;
   }
 
+  /** A mutation: the panel and the strip both follow the backend's answer. */
+  function mutated(next: Category[]) {
+    apply(next);
+    onchanged();
+  }
+
   function fail(e: unknown) {
     error = String(e);
   }
@@ -103,7 +113,7 @@
   function reload() {
     api
       .categoriesList()
-      .then(apply)
+      .then(mutated)
       .catch(fail);
   }
 
@@ -143,6 +153,12 @@
     // flip this panel's button from "add a key" to "file N posts".
     void revision;
     void loadInference();
+  });
+
+  // The strip's `+` and this panel's `+` are one form, so a folder created from
+  // the top of the feed is created where the open folder says it should be.
+  $effect(() => {
+    if (addRequest > 0) startCreate();
   });
 
   $effect(() => {
@@ -223,7 +239,7 @@
     const label = draft.trim();
     if (!label) return;
     try {
-      apply(await api.categoryCreate(creating ?? null, label));
+      mutated(await api.categoryCreate(creating ?? null, label));
       creating = undefined;
       draft = '';
     } catch (e) {
@@ -247,7 +263,7 @@
       return;
     }
     try {
-      apply(await api.categoryUpdate(editing, label, editCriteria));
+      mutated(await api.categoryUpdate(editing, label, editCriteria));
       editing = undefined;
     } catch (e) {
       fail(e);
@@ -261,7 +277,7 @@
     }
     confirmDelete = null;
     try {
-      apply(await api.categoryDelete(id));
+      mutated(await api.categoryDelete(id));
       if (active === id) onpick(null, null);
     } catch (e) {
       fail(e);
@@ -405,7 +421,7 @@
 
     void api
       .categoryMove(moved.id, parent, position)
-      .then(apply)
+      .then(mutated)
       .catch(fail);
   }
 
@@ -415,7 +431,7 @@
     const id = drag.id;
     drag = null;
     hover = null;
-    void api.categoryMove(id, null, null).then(apply).catch(fail);
+    void api.categoryMove(id, null, null).then(mutated).catch(fail);
   }
 
   /** Where to draw the "insert here" line, if the drop is a reorder. */

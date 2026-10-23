@@ -7,6 +7,7 @@
   import Pairing from './lib/Pairing.svelte';
   import Categories from './lib/Categories.svelte';
   import Settings from './lib/Settings.svelte';
+  import CategoryTabs from './lib/CategoryTabs.svelte';
   import * as api from './lib/api';
   import {
     applyTheme,
@@ -33,6 +34,10 @@
   let activeLabel = $state<string | null>(null);
   /** Bumped when the classifier settings change, so the panel re-reads them. */
   let inferenceRevision = $state(0);
+  /** Bumped by the rail panel after a folder edit, so the strip re-reads. */
+  let categoriesRevision = $state(0);
+  /** The strip's `+` opens the rail panel's form rather than a second one. */
+  let addFolderSignal = $state(0);
 
   // Paste-to-import. The quickest route to "one tweet in the library" and it
   // needs no file dialog, no clipboard and no browser involvement.
@@ -319,7 +324,13 @@
     -->
     <main class="column">
       <!-- X's column header: 20px title, 13px meta line, blurred and sticky. -->
-      <header class="listhead hairline">
+      <!--
+        The title block and the folder strip share one sticky pane. Two sticky
+        elements would need the header's height hard-coded as the strip's
+        offset, and that number changes with the meta line.
+      -->
+      <div class="feedhead">
+      <header class="listhead" class:hairline={!!query}>
         <h1>{query ? 'Search' : (activeLabel ?? 'Bookmarks')}</h1>
         <p class="meta">
           {#if query}
@@ -336,6 +347,16 @@
           {/if}
         </p>
       </header>
+
+      {#if !query}
+        <CategoryTabs
+          active={activeCategory}
+          revision={categoriesRevision}
+          onpick={pickCategory}
+          onadd={() => (addFolderSignal += 1)}
+        />
+      {/if}
+      </div>
 
       {#if error}
         <div class="banner error">
@@ -478,6 +499,8 @@
           onpick={pickCategory}
           onsettings={() => (showSettings = true)}
           revision={inferenceRevision}
+          onchanged={() => (categoriesRevision += 1)}
+          addRequest={addFolderSignal}
         />
 
         <p class="colophon">Local-first. Nothing leaves this machine.</p>
@@ -685,12 +708,15 @@
     min-width: 0;
   }
 
-  .listhead {
+  .feedhead {
     position: sticky;
     top: 0;
     z-index: 2;
     background: color-mix(in srgb, var(--bg) 85%, transparent);
     backdrop-filter: blur(12px);
+  }
+
+  .listhead {
     padding: 8px 16px 10px;
   }
 
