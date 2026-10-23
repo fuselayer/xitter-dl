@@ -396,85 +396,123 @@ fn classify_start(
     force: bool,
     limit: Option<usize>,
     send_images: Option<bool>,
-) -> Result<Status, String> {
+) -> Result<(), String> {
     if state.classifying.swap(true, Ordering::SeqCst) {
         return Err("a classification run is already going".into());
     }
 
-    // Any early return has to give the flag back, or the button stays dead
-    // until the app restarts.
-    let result = (|| -> Result<Status, String> {
-        let settings = state
-            .settings
-            .lock()
-            .map_err(|_| "settings lock".to_string())?
-            .clone();
-        let key = keys::get(&settings.provider.id)
-            .ok_or_else(|| "add an API key in Settings first".to_string())?;
-        let lib = state.reader()?;
-        categories::ensure_unsorted(lib.conn()).map_err(err)?;
-        let cats = categories::list(lib.conn()).map_err(err)?;
-        if cats.is_empty() {
-            return Err("make a folder first".into());
+    let settings = match state.settings.lock() {
+        Ok(settings) => settings.clone(),
+        Err(_) => {
+            state.classifying.store(false, Ordering::SeqCst);
+            return Err("settings lock".into());
         }
-        let hash = taxonomy_hash(&cats);
-        let status = classify_status_of(lib.conn(), &hash, &settings.provider.model).map_err(err)?;
+    };
 
-        let options = RunOptions {
-            force,
-            send_images: send_images.unwrap_or(settings.send_images),
-            limit,
-            ..RunOptions::default()
+    let options = RunOptions {
+        force,
+        send_images: send_images.unwrap_or(settings.send_images),
+        limit,
+        ..RunOptions::default()
+    };
+
+    let db_path = state.db_path.clone();
+    let cancel = state.cancel.clone();
+    let running = state.classifying.clone();
+    cancel.store(false, Ordering::SeqCst);
+
+    // Nothing below runs on the caller's thread.
+    //
+    // A synchronous command executes on the window's own thread, so a slow
+    // open, a credential read, or anything that waits on a lock parks the event
+    // loop: the button does nothing, the Stop button queues behind it, and the
+    // run is indistinguishable from a hang. The command's only job is to claim
+    // the flag and hand the work to a thread that can report its own progress.
+    std::thread::spawn(move || {
+        let fail = |message: String| {
+            crumb(&db_path, &format!("error: {message}"));
+            let _ = app.emit("classify:error", message);
+            running.store(false, Ordering::SeqCst);
         };
 
-        let db_path = state.db_path.clone();
-        let cancel = state.cancel.clone();
-        let running = state.classifying.clone();
-        cancel.store(false, Ordering::SeqCst);
+        crumb(&db_path, "start");
 
-        std::thread::spawn(move || {
-            let outcome = (|| -> xdl_core::Result<ClassifyDone> {
-                let lib = Library::open(&db_path)?;
-                let media_dir = lib
-                    .media_dir()
-                    .unwrap_or_else(|| db_path.parent().unwrap_or(Path::new(".")).join("media"));
-                categories::ensure_unsorted(lib.conn())?;
-                let cats = categories::list(lib.conn())?;
-                let client = Client::new(settings.provider.clone(), key);
-                let report = classify(
-                    lib.conn(),
-                    &media_dir,
-                    &client,
-                    &cats,
-                    &options,
-                    &cancel,
-                    &mut |progress| {
-                        let _ = app.emit("classify:progress", progress);
-                    },
-                )?;
-                let status =
-                    classify_status_of(lib.conn(), &taxonomy_hash(&cats), &client.config().model)?;
-                Ok(ClassifyDone { report, status })
-            })();
+        let Some(key) = keys::get(&settings.provider.id) else {
+            return fail("add an API key in Settings first".into());
+        };
+        crumb(&db_path, "key read");
 
-            match outcome {
-                Ok(done) => {
-                    let _ = app.emit("classify:done", done);
-                }
-                Err(e) => {
-                    let _ = app.emit("classify:error", e.to_string());
-                }
+        let outcome = (|| -> xdl_core::Result<ClassifyDone> {
+            let lib = Library::open(&db_path)?;
+            crumb(&db_path, "library open");
+
+            let media_dir = lib
+                .media_dir()
+                .unwrap_or_else(|| db_path.parent().unwrap_or(Path::new(".")).join("media"));
+
+            categories::ensure_unsorted(lib.conn())?;
+            let cats = categories::list(lib.conn())?;
+            if cats.is_empty() {
+                return Err(xdl_core::Error::Invalid("make a folder first".into()));
             }
-            running.store(false, Ordering::SeqCst);
-        });
+            crumb(&db_path, &format!("{} folders", cats.len()));
 
-        Ok(status)
-    })();
+            let client = Client::new(settings.provider.clone(), key);
+            let report = classify(
+                lib.conn(),
+                &media_dir,
+                &client,
+                &cats,
+                &options,
+                &cancel,
+                &mut |progress| {
+                    let _ = app.emit("classify:progress", progress);
+                },
+            )?;
 
-    if result.is_err() {
-        state.classifying.store(false, Ordering::SeqCst);
-    }
-    result
+            let status =
+                classify_status_of(lib.conn(), &taxonomy_hash(&cats), &client.config().model)?;
+            Ok(ClassifyDone { report, status })
+        })();
+
+        match outcome {
+            Ok(done) => {
+                crumb(
+                    &db_path,
+                    &format!(
+                        "done filed={} failed={} cancelled={}",
+                        done.report.filed, done.report.failed, done.report.cancelled
+                    ),
+                );
+                let _ = app.emit("classify:done", done);
+            }
+            Err(e) => {
+                crumb(&db_path, &format!("error: {e}"));
+                let _ = app.emit("classify:error", e.to_string());
+            }
+        }
+        running.store(false, Ordering::SeqCst);
+    });
+
+    Ok(())
+}
+
+/// Leave a breadcrumb in `classify.log` beside the library.
+///
+/// The classifier runs off-thread, so "it hung" has to be answerable from disk
+/// rather than from a window that was replaced. Each step is one line.
+fn crumb(db_path: &Path, step: &str) {
+    use std::io::Write;
+    let Some(dir) = db_path.parent() else { return };
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("classify.log"))
+    else {
+        return;
+    };
+    let record = serde_json::json!({ "at": xdl_core::now(), "step": step });
+    let _ = writeln!(file, "{record}");
 }
 
 #[tauri::command]

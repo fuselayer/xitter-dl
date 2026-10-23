@@ -128,6 +128,8 @@
 
   let infer = $state<InferenceView | null>(null);
   let running = $state(false);
+  /** A stop request is in flight: the run checks it between waves. */
+  let stopping = $state(false);
   let progress = $state<ClassifyProgress | null>(null);
   let note = $state<string | null>(null);
   /**
@@ -168,6 +170,7 @@
       }),
       api.onClassifyDone((d) => {
         running = false;
+        stopping = false;
         progress = null;
         infer = infer ? { ...infer, status: d.status } : infer;
         const parts = [`${d.report.filed} filed`];
@@ -181,6 +184,7 @@
       }),
       api.onClassifyError((message) => {
         running = false;
+        stopping = false;
         progress = null;
         note = message;
         void loadInference();
@@ -193,17 +197,38 @@
 
   async function startClassify(force: boolean) {
     note = null;
+    stopping = false;
+    // Optimistic, because the command now returns as soon as the work is on a
+    // thread. Waiting for the reply to show a spinner was how a run that never
+    // started looked exactly like a button that did nothing.
+    const sending = force ? (infer?.status.pending ?? 0) : take;
+    running = true;
+    progress = { done: 0, considered: sending, failed: 0 };
     try {
       await api.classifyStart(force, force ? null : cap);
-      running = true;
-      progress = { done: 0, considered: infer?.status.pending ?? 0, failed: 0 };
     } catch (e) {
       note = String(e);
       running = false;
+      progress = null;
     }
   }
 
+  // A run that produces no progress for twenty seconds is not silent any more:
+  // either the provider is thinking or the thread is stuck, and both are worth
+  // saying out loud instead of watching a bar at zero.
+  $effect(() => {
+    if (!running) return;
+    const timer = setTimeout(() => {
+      if (running && (progress?.done ?? 0) === 0) {
+        note =
+          'No progress after 20 seconds. The last step is in classify.log beside the library.';
+      }
+    }, 20_000);
+    return () => clearTimeout(timer);
+  });
+
   async function stopClassify() {
+    stopping = true;
     try {
       await api.classifyCancel();
     } catch (e) {
@@ -594,7 +619,9 @@
           {progress ? `${progress.done} of ${progress.considered}` : 'starting…'}
           {#if progress && progress.failed > 0}· {progress.failed} failed{/if}
         </span>
-        <button class="stop" onclick={stopClassify}>Stop</button>
+        <button class="stop" onclick={stopClassify} disabled={stopping}>
+          {stopping ? 'Stopping…' : 'Stop'}
+        </button>
       </div>
     {:else}
       <div class="runrow">
