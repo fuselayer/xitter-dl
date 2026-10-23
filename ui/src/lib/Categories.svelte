@@ -521,7 +521,7 @@
           <input
             class="edit-criteria"
             bind:value={editCriteria}
-            maxlength="200"
+            maxlength="400"
             placeholder="What belongs here (read by the classifier)"
             onkeydown={(e) => e.key === 'Escape' && (editing = undefined)}
           />
