@@ -63,6 +63,15 @@ pub struct Preset {
 /// Known providers, in the order they are offered.
 pub const PRESETS: &[Preset] = &[
     Preset {
+        // The free model is the only provider here that costs nothing at all
+        // and still reads images, so it is offered first and is the default
+        // for a fresh install.
+        id: "beatapi",
+        label: "BeatAPI",
+        base_url: "https://api.beatapi.io/v1",
+        model: "jev-1.14-free",
+    },
+    Preset {
         id: "typesafe",
         label: "TypeSafe",
         base_url: "https://api.typesafe.ai",
@@ -105,7 +114,7 @@ impl ProviderConfig {
     /// The default for a fresh install: the free tier, so the first thing a
     /// user sees is a provider that costs nothing to try.
     pub fn default_config() -> Self {
-        Self::preset("opencode").expect("the opencode preset exists")
+        Self::preset("beatapi").expect("the beatapi preset exists")
     }
 
     /// Trim, and reject a config that could not possibly work.

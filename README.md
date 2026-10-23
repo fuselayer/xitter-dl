@@ -377,8 +377,10 @@ it, and both are yours — the same word means different things to different
 people, so the definition travels with the name.
 
 Filling them is the classifier's job. **Settings → Classification** takes a
-provider (TypeSafe, OpenCode Zen, or any host serving the same API), a model and
-an API key. The key goes to Windows Credential Manager: it is never written to
+provider (BeatAPI, TypeSafe, OpenCode Zen, or any host serving the same API), a model and
+an API key. BeatAPI is the default because `jev-1.14-free` costs nothing, even
+on a zero balance, and still reads images; its paid `jev-1.14` is the same
+endpoint with a balance behind it. The key goes to Windows Credential Manager: it is never written to
 `settings.json`, never sent to the webview, and cannot be read back after
 saving — only "saved ••••1234".
 
