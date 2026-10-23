@@ -167,6 +167,9 @@
       api.onClassifyProgress((p) => {
         running = true;
         progress = p;
+        // The reason a run is not moving belongs on screen while it is not
+        // moving, not in the report after someone gives up and presses Stop.
+        if (p.message) note = p.message;
       }),
       api.onClassifyDone((d) => {
         running = false;

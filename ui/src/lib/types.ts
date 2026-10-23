@@ -237,6 +237,8 @@ export interface ClassifyProgress {
   done: number;
   considered: number;
   failed: number;
+  /** The provider's words for the first failure, or what the run is waiting on. */
+  message?: string | null;
 }
 
 export interface RunReport {

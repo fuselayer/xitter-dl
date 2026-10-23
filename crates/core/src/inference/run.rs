@@ -84,7 +84,7 @@ pub struct RunReport {
     pub cancelled: bool,
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
     pub done: u64,
