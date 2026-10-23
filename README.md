@@ -388,8 +388,10 @@ link and nothing else — is sent as an image, with the
 and a paragraph is sent as text. Turn images off in Settings for a model without
 vision.
 
-Nothing is filed until you press the button in the categories panel. Runs are
-resumable: a post that failed has no verdict, so the next run retries it, and
+Nothing is filed until you press the button in the categories panel, and that
+button sends a capped run by default — 25, 100, 250 or 500 posts, newest first,
+with `all` as a deliberate choice — because a library-wide run is a bill and the
+first one should be a sample. Runs are resumable: a post that failed has no verdict, so the next run retries it, and
 editing one folder's sentence re-runs exactly the posts whose verdict was
 reached under the old wording. Deleting a folder takes its subfolders and their
 verdicts with it, and never touches the posts.

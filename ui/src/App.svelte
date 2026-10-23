@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import type { LibraryStats, PostView, SearchHit } from './lib/types';
   import Tweet from './lib/Tweet.svelte';
   import Icon from './lib/Icon.svelte';
@@ -75,7 +75,8 @@
     activeLabel = label;
     if (query) query = '';
     hits = null;
-    void refresh();
+    // The effect above notices `activeCategory`; calling refresh here as well
+    // would run two reads of the same list.
   }
 
   async function refresh() {
@@ -101,8 +102,18 @@
     }
   }
 
+  // Refresh when the open folder changes — and only then.
+  //
+  // `untrack` is the whole point: `refresh()` reads the list to decide whether
+  // to raise the skeleton, so an effect that calls it directly both reads and
+  // writes `posts`, re-runs itself, and spins. With a non-empty list the spin
+  // was invisible (same rows, keyed, redrawn in place); on an empty folder it
+  // alternated skeleton and empty state at frame rate, and the window never
+  // got a quiet moment. Reading `activeCategory` and running the body
+  // untracked leaves one dependency: the folder.
   $effect(() => {
-    void refresh();
+    void activeCategory;
+    untrack(() => void refresh());
   });
 
   // A batch names the posts it touched, so the feed re-reads those rows
@@ -355,6 +366,17 @@
               Search covers the full text of every saved post, including long-form
               notes. Try another word, or press Esc to go back to the list.
             </p>
+          {:else if activeCategory}
+            <h2>Nothing filed here yet</h2>
+            <p>
+              “{activeLabel}” has no posts. File them from the categories panel on the
+              right — the whole library, or a capped run to see what it does first.
+            </p>
+            <div class="empty-actions">
+              <button class="ghost" onclick={() => (activeCategory = null)}>
+                Show all bookmarks
+              </button>
+            </div>
           {:else}
             <h2>Nothing saved here yet</h2>
             <p>

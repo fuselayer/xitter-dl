@@ -121,6 +121,12 @@
   let running = $state(false);
   let progress = $state<ClassifyProgress | null>(null);
   let note = $state<string | null>(null);
+  /**
+   * How many posts one run may send. The user pays per token, so the first run
+   * is a sample by default rather than the whole library — `all` is there, but
+   * it is a choice, not the only button.
+   */
+  let cap = $state<number | null>(100);
 
   async function loadInference() {
     try {
@@ -171,7 +177,7 @@
   async function startClassify(force: boolean) {
     note = null;
     try {
-      await api.classifyStart(force);
+      await api.classifyStart(force, force ? null : cap);
       running = true;
       progress = { done: 0, considered: infer?.status.pending ?? 0, failed: 0 };
     } catch (e) {
@@ -187,6 +193,11 @@
       note = String(e);
     }
   }
+
+  /** What this run would actually send: the cap, or what is left. */
+  const take = $derived(
+    infer ? Math.min(cap ?? infer.status.pending, infer.status.pending) : 0,
+  );
 
   const pct = $derived(
     progress && progress.considered > 0
@@ -589,8 +600,21 @@
       <div class="runrow">
         {#if infer.status.pending > 0}
           <button class="run" onclick={() => startClassify(false)}>
-            File {infer.status.pending} post{infer.status.pending === 1 ? '' : 's'}
+            File {take} post{take === 1 ? '' : 's'}
           </button>
+          <!-- The cap is deliberately a control, not a constant: the first run
+               should cost pennies, and "all" stays available once it is trusted. -->
+          <select
+            class="cap"
+            bind:value={cap}
+            title="How many posts this run may send — newest first"
+          >
+            <option value={25}>25</option>
+            <option value={100}>100</option>
+            <option value={250}>250</option>
+            <option value={500}>500</option>
+            <option value={null}>all</option>
+          </select>
         {:else}
           <button class="run quiet" onclick={() => startClassify(true)}>Re-file everything</button>
         {/if}
@@ -915,6 +939,18 @@
 
   .run:hover {
     background: var(--bg-hover);
+  }
+
+  .cap {
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    border-radius: 9999px;
+    padding: 7px 6px;
+    font: inherit;
+    font-size: 12px;
+    width: 66px;
+    text-align: center;
   }
 
   .run.quiet {
