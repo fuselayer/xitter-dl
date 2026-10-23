@@ -23,7 +23,7 @@
 //!    rather than a duplication.
 
 /// Increment when `MIGRATIONS` gains an entry.
-pub const SCHEMA_VERSION: i32 = 2;
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// Migration 1 — the full initial schema.
 const M001_INITIAL: &str = r#"
@@ -294,9 +294,44 @@ CREATE TABLE media_blobs (
 CREATE INDEX media_blobs_by_hash ON media_blobs(blob_hash);
 "#;
 
+/// Migration 3 — folders, and which post was filed where.
+///
+/// `parent_id` makes the tree, so a category can hold categories. `criteria` is
+/// the sentence the classifier reads: the label alone is often ambiguous
+/// ("markets" is not a definition), so the definition travels with the folder.
+///
+/// `post_categories` keeps the evidence, not just the verdict: a confidence and
+/// the model that said so. Re-classification rewrites one row per post, so the
+/// primary key is the post — a post lives in exactly one folder, which is what
+/// a folder is.
+const M003_CATEGORIES: &str = r#"
+CREATE TABLE categories (
+  id         TEXT PRIMARY KEY,
+  parent_id  TEXT REFERENCES categories(id) ON DELETE CASCADE,
+  label      TEXT NOT NULL,
+  criteria   TEXT NOT NULL DEFAULT '',
+  position   INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX categories_parent ON categories(parent_id, position);
+
+CREATE TABLE post_categories (
+  post_id       TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+  category_id   TEXT NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  confidence    REAL,
+  score         REAL,
+  model         TEXT,
+  taxonomy_hash TEXT,
+  classified_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX post_categories_category ON post_categories(category_id);
+"#;
+
 /// SQL batches, applied in order. Append only — never edit a shipped entry,
 /// because a database in the wild has already run it.
-pub const MIGRATIONS: &[&str] = &[M001_INITIAL, M002_MEDIA_BLOBS];
+pub const MIGRATIONS: &[&str] = &[M001_INITIAL, M002_MEDIA_BLOBS, M003_CATEGORIES];
 
 #[cfg(test)]
 mod tests {

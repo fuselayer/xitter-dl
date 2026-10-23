@@ -188,6 +188,19 @@ export interface SearchHit {
   matched: string[];
 }
 
+export interface Category {
+  id: string;
+  parentId: string | null;
+  label: string;
+  /** What belongs in it, in a sentence. Read by the classifier. */
+  criteria: string;
+  position: number;
+  /** Posts filed directly in this folder. */
+  own: number;
+  /** Posts filed here or anywhere below. */
+  total: number;
+}
+
 export interface LibraryStats {
   posts: number;
   bookmarks: number;

@@ -15,15 +15,55 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { ImportResult, LibraryStats, PostView, SearchHit } from './types';
+import type { Category, ImportResult, LibraryStats, PostView, SearchHit } from './types';
 
 /** True when running inside the Tauri shell rather than a plain browser. */
 export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-export async function listBookmarks(limit = 100, offset = 0): Promise<PostView[]> {
-  return invoke<PostView[]>('list_bookmarks', { limit, offset });
+export async function listBookmarks(
+  limit = 100,
+  offset = 0,
+  category: string | null = null,
+): Promise<PostView[]> {
+  return invoke<PostView[]>('list_bookmarks', { limit, offset, category });
+}
+
+// ── categories ──────────────────────────────────────────────────────────────
+// Each mutation answers with the whole tree: it is a few dozen rows, and a
+// partial answer is how two views end up disagreeing about what exists.
+
+export async function categoriesList(): Promise<Category[]> {
+  return invoke<Category[]>('categories_list');
+}
+
+export async function categoryCreate(
+  parent: string | null,
+  label: string,
+  criteria = '',
+): Promise<Category[]> {
+  return invoke<Category[]>('category_create', { parent, label, criteria });
+}
+
+export async function categoryUpdate(
+  id: string,
+  label: string,
+  criteria = '',
+): Promise<Category[]> {
+  return invoke<Category[]>('category_update', { id, label, criteria });
+}
+
+export async function categoryMove(
+  id: string,
+  parent: string | null,
+  position: number | null = null,
+): Promise<Category[]> {
+  return invoke<Category[]>('category_move', { id, parent, position });
+}
+
+export async function categoryDelete(id: string): Promise<Category[]> {
+  return invoke<Category[]>('category_delete', { id });
 }
 
 export async function getPost(id: string): Promise<PostView | null> {

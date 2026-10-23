@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
 use xdl_core::bridge::{Bridge, BridgeEvent, BridgeOptions, Ingest, Notify, Pairing};
+use xdl_core::categories::{self, Category};
 use xdl_core::db::{read, write, Library};
 use xdl_core::model::PostView;
 use xdl_core::search::SearchHit;
@@ -172,9 +173,76 @@ fn summarize(
 // ── read commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-fn list_bookmarks(state: State<'_, AppState>, limit: usize, offset: usize) -> Result<Vec<PostView>, String> {
+fn list_bookmarks(
+    state: State<'_, AppState>,
+    limit: usize,
+    offset: usize,
+    category: Option<String>,
+) -> Result<Vec<PostView>, String> {
     let lib = state.reader()?;
-    read::list_bookmarks(lib.conn(), limit, offset).map_err(err)
+    read::list_bookmarks_in(lib.conn(), category.as_deref(), limit, offset).map_err(err)
+}
+
+// ── categories ───────────────────────────────────────────────────────────────
+//
+// Every mutation returns the whole list. The tree is small (tens of rows), the
+// window redraws it either way, and a partial answer would let two windows
+// disagree about what exists.
+
+#[tauri::command]
+fn categories_list(state: State<'_, AppState>) -> Result<Vec<Category>, String> {
+    let lib = state.reader()?;
+    categories::list(lib.conn()).map_err(err)
+}
+
+#[tauri::command]
+fn category_create(
+    state: State<'_, AppState>,
+    parent: Option<String>,
+    label: String,
+    criteria: Option<String>,
+) -> Result<Vec<Category>, String> {
+    let lib = state.reader()?;
+    categories::create(
+        lib.conn(),
+        parent.as_deref(),
+        &label,
+        criteria.as_deref().unwrap_or(""),
+    )
+    .map_err(err)?;
+    categories::list(lib.conn()).map_err(err)
+}
+
+#[tauri::command]
+fn category_update(
+    state: State<'_, AppState>,
+    id: String,
+    label: String,
+    criteria: Option<String>,
+) -> Result<Vec<Category>, String> {
+    let lib = state.reader()?;
+    categories::update(lib.conn(), &id, &label, criteria.as_deref().unwrap_or("")).map_err(err)?;
+    categories::list(lib.conn()).map_err(err)
+}
+
+/// Move a folder under `parent` (or the root) at `position` among its siblings.
+#[tauri::command]
+fn category_move(
+    state: State<'_, AppState>,
+    id: String,
+    parent: Option<String>,
+    position: Option<i64>,
+) -> Result<Vec<Category>, String> {
+    let lib = state.reader()?;
+    categories::move_to(lib.conn(), &id, parent.as_deref(), position).map_err(err)?;
+    categories::list(lib.conn()).map_err(err)
+}
+
+#[tauri::command]
+fn category_delete(state: State<'_, AppState>, id: String) -> Result<Vec<Category>, String> {
+    let lib = state.reader()?;
+    categories::delete(lib.conn(), &id).map_err(err)?;
+    categories::list(lib.conn()).map_err(err)
 }
 
 #[tauri::command]
@@ -602,6 +670,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_bookmarks,
+            categories_list,
+            category_create,
+            category_update,
+            category_move,
+            category_delete,
             get_post,
             posts_by_ids,
             search,

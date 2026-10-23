@@ -197,16 +197,50 @@ pub fn blob_mime(conn: &Connection, hash: &str) -> Result<Option<String>> {
 /// and sorting by it would silently bury the oldest and most valuable rows
 /// (PRD §6.3).
 pub fn list_bookmarks(conn: &Connection, limit: usize, offset: usize) -> Result<Vec<PostView>> {
-    let sql = format!(
-        "SELECT {POST_COLUMNS}
-           FROM bookmarks b
-           JOIN posts p ON p.id = b.post_id
-          ORDER BY CAST(b.sort_index AS INTEGER) DESC NULLS LAST,
-                   p.created_at DESC
-          LIMIT ?1 OFFSET ?2"
-    );
+    list_bookmarks_in(conn, None, limit, offset)
+}
+
+/// Bookmarks filed in `category` or in any folder below it, newest first.
+///
+/// The descendant walk is a recursive CTE so selecting a folder shows what is
+/// inside its subfolders too — a folder that hides its children's posts would
+/// be a filter, not a folder.
+pub fn list_bookmarks_in(
+    conn: &Connection,
+    category: Option<&str>,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<PostView>> {
+    let sql = match category {
+        None => format!(
+            "SELECT {POST_COLUMNS}
+               FROM bookmarks b
+               JOIN posts p ON p.id = b.post_id
+              ORDER BY CAST(b.sort_index AS INTEGER) DESC NULLS LAST,
+                       p.created_at DESC
+              LIMIT ?1 OFFSET ?2"
+        ),
+        Some(_) => format!(
+            "WITH RECURSIVE under(id) AS (
+                 SELECT ?3
+                 UNION ALL
+                 SELECT c.id FROM categories c JOIN under u ON c.parent_id = u.id
+             )
+             SELECT {POST_COLUMNS}
+               FROM bookmarks b
+               JOIN posts p ON p.id = b.post_id
+               JOIN post_categories pc ON pc.post_id = b.post_id
+              WHERE pc.category_id IN (SELECT id FROM under)
+              ORDER BY CAST(b.sort_index AS INTEGER) DESC NULLS LAST,
+                       p.created_at DESC
+              LIMIT ?1 OFFSET ?2"
+        ),
+    };
     let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(params![limit as i64, offset as i64])?;
+    let mut rows = match category {
+        None => stmt.query(params![limit as i64, offset as i64])?,
+        Some(id) => stmt.query(params![limit as i64, offset as i64, id])?,
+    };
 
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {

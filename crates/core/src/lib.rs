@@ -28,6 +28,7 @@
 //!    not weaken this: it *listens* on loopback and never dials out.
 
 pub mod bridge;
+pub mod categories;
 pub mod db;
 pub mod error;
 pub mod import;

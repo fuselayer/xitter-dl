@@ -5,6 +5,7 @@
   import Icon from './lib/Icon.svelte';
   import Snippet from './lib/Snippet.svelte';
   import Pairing from './lib/Pairing.svelte';
+  import Categories from './lib/Categories.svelte';
   import * as api from './lib/api';
   import {
     applyTheme,
@@ -22,6 +23,13 @@
   let themeChoice = $state<ThemeChoice>(loadThemeChoice());
   let error = $state<string | null>(null);
   let loading = $state(true);
+  /**
+   * The folder the feed is showing, or null for the whole library. The filter
+   * runs in SQL rather than over the loaded list, so opening a folder is one
+   * query, not a client-side pass over five hundred rows.
+   */
+  let activeCategory = $state<string | null>(null);
+  let activeLabel = $state<string | null>(null);
 
   // Paste-to-import. The quickest route to "one tweet in the library" and it
   // needs no file dialog, no clipboard and no browser involvement.
@@ -57,6 +65,15 @@
   });
 
   // ── data ─────────────────────────────────────────────────────────────────
+  /** Open a folder: it is a different query, and search does not apply to it. */
+  function pickCategory(id: string | null, label: string | null) {
+    activeCategory = id;
+    activeLabel = label;
+    if (query) query = '';
+    hits = null;
+    void refresh();
+  }
+
   async function refresh() {
     // Only a window with nothing on screen gets the skeleton. A live capture
     // arrives while you are reading, and swapping the feed for placeholder
@@ -65,7 +82,7 @@
     error = null;
     try {
       if (api.isTauri()) {
-        posts = await api.listBookmarks(500, 0);
+        posts = await api.listBookmarks(500, 0, activeCategory);
         libraryStats = await api.stats();
       } else {
         error =
@@ -280,10 +297,12 @@
     <main class="column">
       <!-- X's column header: 20px title, 13px meta line, blurred and sticky. -->
       <header class="listhead hairline">
-        <h1>{query ? 'Search' : 'Bookmarks'}</h1>
+        <h1>{query ? 'Search' : (activeLabel ?? 'Bookmarks')}</h1>
         <p class="meta">
           {#if query}
             {list.length} result{list.length === 1 ? '' : 's'} for “{query}”
+          {:else if activeCategory}
+            {list.length}{list.length === 500 ? '+' : ''} in this folder
           {:else if libraryStats}
             {formatCount(libraryStats.bookmarks)} bookmark{libraryStats.bookmarks === 1 ? '' : 's'}
             {#if libraryStats.removed > 0}
@@ -418,6 +437,12 @@
             <span class="keyrow"><kbd>Esc</kbd> Clear search, close panels</span>
           </div>
         </section>
+
+        <Categories
+          active={activeCategory}
+          total={libraryStats?.bookmarks ?? 0}
+          onpick={pickCategory}
+        />
 
         <p class="colophon">Local-first. Nothing leaves this machine.</p>
       </div>
