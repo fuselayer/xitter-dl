@@ -6,6 +6,7 @@
   import Snippet from './lib/Snippet.svelte';
   import Pairing from './lib/Pairing.svelte';
   import Categories from './lib/Categories.svelte';
+  import Settings from './lib/Settings.svelte';
   import * as api from './lib/api';
   import {
     applyTheme,
@@ -30,9 +31,12 @@
    */
   let activeCategory = $state<string | null>(null);
   let activeLabel = $state<string | null>(null);
+  /** Bumped when the classifier settings change, so the panel re-reads them. */
+  let inferenceRevision = $state(0);
 
   // Paste-to-import. The quickest route to "one tweet in the library" and it
   // needs no file dialog, no clipboard and no browser involvement.
+  let showSettings = $state(false);
   let showImport = $state(false);
   let importText = $state('');
   let importBusy = $state(false);
@@ -134,6 +138,13 @@
   // most: you scroll x.com, the receiver files twenty bookmarks, and the window
   // you are looking at shows none of them.
   onMount(() => {
+    // A finished run changes both the folder counts and, when a folder is
+    // open, which posts the feed should show.
+    let offClassify: (() => void) | undefined;
+    void api.onClassifyDone(() => {
+      void refresh();
+    }).then((off) => (offClassify = off));
+
     let off: (() => void) | undefined;
     let alive = true;
     void api
@@ -265,6 +276,7 @@
           <button class="ghost wide" onclick={() => (showImport = !showImport)}>
             Import JSON
           </button>
+          <button class="ghost wide" onclick={() => (showSettings = true)}>Settings</button>
         </div>
 
         <!-- Theme lives at the foot of the rail as a segmented control: the
@@ -442,12 +454,23 @@
           active={activeCategory}
           total={libraryStats?.bookmarks ?? 0}
           onpick={pickCategory}
+          onsettings={() => (showSettings = true)}
+          revision={inferenceRevision}
         />
 
         <p class="colophon">Local-first. Nothing leaves this machine.</p>
       </div>
     </aside>
   </div>
+
+  <Settings
+    open={showSettings}
+    onclose={() => (showSettings = false)}
+    onsaved={() => {
+      inferenceRevision += 1;
+      void refresh();
+    }}
+  />
 </div>
 
 <style>

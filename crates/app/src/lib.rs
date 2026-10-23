@@ -3,11 +3,16 @@
 //! ## What this process is, and is not
 //!
 //! It is a window, a SQLite connection, a loopback listener, and a set of typed
-//! commands. It is **not** a network client. No HTTP client crate is linked
-//! into this binary, and it holds no X credential of any kind. The
-//! architecture's central claim — that the app could not generate X traffic if
-//! it wanted to — is enforced here, at the dependency boundary, rather than by
-//! convention (PRD §4.3, §7.1).
+//! commands. It holds no X credential of any kind and cannot generate X
+//! traffic: the architecture's central claim is enforced at the dependency
+//! boundary rather than by convention (PRD §4.3, §7.1).
+//!
+//! One client is linked in, and it exists for exactly one caller: the
+//! classifier. That client (`xdl_core::inference`) is pointed at the provider
+//! the user configured — TypeSafe, OpenCode Zen, or a host they typed — and
+//! knows no X host. It is the narrow exception described in PRD §7.4, and the
+//! only credential it holds is the user's own API key, read from the OS
+//! credential store when a run starts.
 //!
 //! The bridge ([`xdl_core::bridge`]) is the mirror image of a client and does
 //! not weaken that claim: it binds `127.0.0.1`, waits, and never dials out. It
@@ -30,16 +35,23 @@
 //! capture batch and a manual import are both short.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
 use xdl_core::bridge::{Bridge, BridgeEvent, BridgeOptions, Ingest, Notify, Pairing};
 use xdl_core::categories::{self, Category};
 use xdl_core::db::{read, write, Library};
+use xdl_core::inference::{
+    self, classify, status as classify_status_of, taxonomy_hash, Client, Preset, ProviderConfig,
+    RunOptions, RunReport, Status, PRESETS,
+};
 use xdl_core::model::PostView;
 use xdl_core::search::SearchHit;
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
+
+mod keys;
+mod settings;
 
 /// Shared application state.
 pub struct AppState {
@@ -62,6 +74,13 @@ pub struct AppState {
     last_script_version: Arc<Mutex<Option<String>>>,
     /// Kept alive for the life of the process; dropping it stops the listener.
     bridge: Mutex<Option<Bridge>>,
+    /// Provider, model, and whether images may be sent. Never the key.
+    settings: Arc<Mutex<settings::Settings>>,
+    settings_path: PathBuf,
+    /// True while a classification run owns the classifier.
+    classifying: Arc<AtomicBool>,
+    /// Set by `classify_cancel`; checked between waves.
+    cancel: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -79,6 +98,12 @@ impl AppState {
             persist_pairing(&pairing_path, &pairing);
         }
 
+        let settings_path = db_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("settings.json");
+        let settings = settings::load(&settings_path);
+
         Ok(Self {
             db_path,
             writer: Arc::new(Mutex::new(writer)),
@@ -88,6 +113,10 @@ impl AppState {
             last_capture_at: Arc::new(AtomicI64::new(0)),
             last_script_version: Arc::new(Mutex::new(None)),
             bridge: Mutex::new(None),
+            settings: Arc::new(Mutex::new(settings)),
+            settings_path,
+            classifying: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -97,6 +126,10 @@ impl AppState {
 
     pub fn pairing_path(&self) -> &Path {
         &self.pairing_path
+    }
+
+    pub fn settings_path(&self) -> &Path {
+        &self.settings_path
     }
 
     /// A fresh connection for a read.
@@ -243,6 +276,214 @@ fn category_delete(state: State<'_, AppState>, id: String) -> Result<Vec<Categor
     let lib = state.reader()?;
     categories::delete(lib.conn(), &id).map_err(err)?;
     categories::list(lib.conn()).map_err(err)
+}
+
+// ── classifier ───────────────────────────────────────────────────────────────
+//
+// The UI never sees a key: it can set one, clear one, and learn that one
+// exists (with a four-character hint), and that is the whole surface.
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InferenceView {
+    provider: ProviderConfig,
+    presets: &'static [Preset],
+    has_key: bool,
+    key_hint: Option<String>,
+    send_images: bool,
+    status: Status,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ClassifyDone {
+    report: RunReport,
+    status: Status,
+}
+
+/// Everything the settings panel needs, including how much work is left.
+fn inference_view(state: &AppState) -> Result<InferenceView, String> {
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "settings lock".to_string())?
+        .clone();
+    let lib = state.reader()?;
+    let cats = categories::list(lib.conn()).map_err(err)?;
+    let hash = taxonomy_hash(&cats);
+    let status = classify_status_of(lib.conn(), &hash, &settings.provider.model).map_err(err)?;
+    Ok(InferenceView {
+        has_key: keys::get(&settings.provider.id).is_some(),
+        key_hint: keys::get(&settings.provider.id).map(|k| keys::hint(&k)),
+        provider: settings.provider,
+        presets: PRESETS,
+        send_images: settings.send_images,
+        status,
+    })
+}
+
+#[tauri::command]
+fn inference_config(state: State<'_, AppState>) -> Result<InferenceView, String> {
+    inference_view(&state)
+}
+
+/// Save provider, model, image policy — and a key, if one was typed.
+///
+/// An empty key string is not "leave it alone": it is a deliberate clear, which
+/// is why the UI sends `None` when the field was untouched.
+#[tauri::command]
+fn inference_save(
+    state: State<'_, AppState>,
+    provider: String,
+    base_url: String,
+    model: String,
+    key: Option<String>,
+    send_images: bool,
+) -> Result<InferenceView, String> {
+    let config = ProviderConfig { id: provider, base_url, model }
+        .validated()
+        .map_err(err)?;
+
+    if let Some(key) = key {
+        let key = key.trim();
+        if key.is_empty() {
+            keys::clear(&config.id)?;
+        } else {
+            keys::set(&config.id, key)?;
+        }
+    }
+
+    {
+        let mut settings = state
+            .settings
+            .lock()
+            .map_err(|_| "settings lock".to_string())?;
+        settings.provider = config;
+        settings.send_images = send_images;
+        settings::save(state.settings_path(), &settings)?;
+    }
+    inference_view(&state)
+}
+
+/// One round-trip with the configured provider, on a throwaway sentence.
+#[tauri::command]
+async fn inference_test(
+    state: State<'_, AppState>,
+) -> Result<inference::client::TestResult, String> {
+    let config = state
+        .settings
+        .lock()
+        .map_err(|_| "settings lock".to_string())?
+        .provider
+        .clone();
+    let key = keys::get(&config.id).ok_or_else(|| "no key saved for this provider".to_string())?;
+    let config_for_task = config.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Client::new(config_for_task, key).test().map_err(err)
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Start a classification run on a worker thread.
+///
+/// Returns the current status immediately; the run reports through
+/// `classify:progress` and finishes with `classify:done` (or `classify:error`).
+#[tauri::command]
+fn classify_start(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    force: bool,
+    limit: Option<usize>,
+    send_images: Option<bool>,
+) -> Result<Status, String> {
+    if state.classifying.swap(true, Ordering::SeqCst) {
+        return Err("a classification run is already going".into());
+    }
+
+    // Any early return has to give the flag back, or the button stays dead
+    // until the app restarts.
+    let result = (|| -> Result<Status, String> {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|_| "settings lock".to_string())?
+            .clone();
+        let key = keys::get(&settings.provider.id)
+            .ok_or_else(|| "add an API key in Settings first".to_string())?;
+        let lib = state.reader()?;
+        let cats = categories::list(lib.conn()).map_err(err)?;
+        if cats.is_empty() {
+            return Err("make a folder first".into());
+        }
+        let hash = taxonomy_hash(&cats);
+        let status = classify_status_of(lib.conn(), &hash, &settings.provider.model).map_err(err)?;
+
+        let options = RunOptions {
+            force,
+            send_images: send_images.unwrap_or(settings.send_images),
+            limit,
+            ..RunOptions::default()
+        };
+
+        let db_path = state.db_path.clone();
+        let cancel = state.cancel.clone();
+        let running = state.classifying.clone();
+        cancel.store(false, Ordering::SeqCst);
+
+        std::thread::spawn(move || {
+            let outcome = (|| -> xdl_core::Result<ClassifyDone> {
+                let lib = Library::open(&db_path)?;
+                let media_dir = lib
+                    .media_dir()
+                    .unwrap_or_else(|| db_path.parent().unwrap_or(Path::new(".")).join("media"));
+                let cats = categories::list(lib.conn())?;
+                let client = Client::new(settings.provider.clone(), key);
+                let report = classify(
+                    lib.conn(),
+                    &media_dir,
+                    &client,
+                    &cats,
+                    &options,
+                    &cancel,
+                    &mut |progress| {
+                        let _ = app.emit("classify:progress", progress);
+                    },
+                )?;
+                let status =
+                    classify_status_of(lib.conn(), &taxonomy_hash(&cats), &client.config().model)?;
+                Ok(ClassifyDone { report, status })
+            })();
+
+            match outcome {
+                Ok(done) => {
+                    let _ = app.emit("classify:done", done);
+                }
+                Err(e) => {
+                    let _ = app.emit("classify:error", e.to_string());
+                }
+            }
+            running.store(false, Ordering::SeqCst);
+        });
+
+        Ok(status)
+    })();
+
+    if result.is_err() {
+        state.classifying.store(false, Ordering::SeqCst);
+    }
+    result
+}
+
+#[tauri::command]
+fn classify_cancel(state: State<'_, AppState>) -> Result<(), String> {
+    state.cancel.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+fn classify_status(state: State<'_, AppState>) -> Result<Status, String> {
+    inference_view(&state).map(|v| v.status)
 }
 
 #[tauri::command]
@@ -675,6 +916,12 @@ pub fn run() {
             category_update,
             category_move,
             category_delete,
+            inference_config,
+            inference_save,
+            inference_test,
+            classify_start,
+            classify_cancel,
+            classify_status,
             get_post,
             posts_by_ids,
             search,

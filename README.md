@@ -13,16 +13,19 @@ No API, no OAuth, no scraping service, no cloud, no account, no recurring cost.
 
 | Piece | State |
 |---|---|
-| `crates/core` | Schema, X payload parsing, importers, FTS5 search — 166 tests |
+| `crates/core` | Schema, X payload parsing, importers, FTS5 search, folders — 183 tests |
 | `crates/core/src/bridge` | Loopback receiver and pairing — 57 of those, over real sockets |
 | `crates/cli` | `xdl import / search / show / stats / bridge` |
+| `crates/core/src/inference` | JEV client, answer shapes, resumable filing — 12 of those |
 | `crates/app` | Tauri v2 shell: window, IPC commands, receiver lifecycle |
 | `ui` | Svelte 5 frontend, three X themes, capture and pairing panel |
 | `userscript` | Capture script — thumbnails included — 41 JS tests |
 | Continuous capture | Not implemented |
+| Categories | Folders in the right rail, drag to nest, SQL filter |
+| Classifier | User-defined folders, JEV over your own key — see [Categories and classification](#categories-and-classification) |
 | Media | Thumbnails only — see [Media is thumbnails only](#media-is-thumbnails-only) |
 
-Rust: `181` tests. JavaScript: `41`.
+Rust: `198` tests. JavaScript: `41`.
 
 ---
 
@@ -359,6 +362,40 @@ whose build script passes `-DSQLITE_ENABLE_FTS5` to the C compiler. The
 
 ---
 
+## Categories and classification
+
+The right rail holds folders, and a folder can hold folders: drag one onto
+another to nest it, onto a top or bottom edge to reorder, onto the header to
+pull it back out. They are not X's interest tabs. Every folder is a name and a
+sentence saying what belongs in it, and both are yours — the same word means
+different things to different people, so the definition travels with the name.
+
+Clicking a folder filters the feed with a recursive query, so a parent shows
+everything inside its children.
+
+Filling them is the classifier's job. **Settings → Classification** takes a
+provider (TypeSafe, OpenCode Zen, or any host serving the same API), a model and
+an API key. The key goes to Windows Credential Manager: it is never written to
+`settings.json`, never sent to the webview, and cannot be read back after
+saving — only "saved ••••1234".
+
+A run sends one structured request per post: the post as `state`, a `choice`
+question whose criteria are your folders, and a `score` question for how central
+the post is to whichever folder it lands in. What is stored is the verdict, its
+confidence, the score and the model that said so. An image post — a photo with a
+link and nothing else — is sent as an image, with the
+`TypeSafe-Danger-Zone-Images` header the endpoint requires; a post with a picture
+and a paragraph is sent as text. Turn images off in Settings for a model without
+vision.
+
+Nothing is filed until you press the button in the categories panel. Runs are
+resumable: a post that failed has no verdict, so the next run retries it, and
+editing one folder's sentence re-runs exactly the posts whose verdict was
+reached under the old wording. Deleting a folder takes its subfolders and their
+verdicts with it, and never touches the posts.
+
+---
+
 ## Media is thumbnails only
 
 A bookmark shows the preview X's own timeline draws at that slot, and nothing
@@ -425,6 +462,8 @@ No X API. No OAuth. No headless browser, Playwright, Puppeteer or Selenium. No
 third-party scraping API, proxies or residential IPs. No cloud sync, telemetry
 or phone-home.
 
-The app holds no X credential and links no HTTP client. It could not generate X
-traffic if it wanted to, and that is enforced at the dependency boundary rather
-than by convention.
+The app holds no X credential and cannot generate X traffic. One HTTP client is
+linked in, and it exists for exactly one caller: the classifier, pointed at the
+provider you configured. It knows no X host, and what it sends is your post text
+and the previews you allowed it to send. That exception is enforced at the
+dependency boundary — the module, not a convention — and it is the only one.

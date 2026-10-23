@@ -291,6 +291,36 @@ pub fn assign(conn: &Connection, post_id: &str, category_id: &str) -> Result<()>
     Ok(())
 }
 
+/// File a post with the evidence that produced the verdict.
+///
+/// Separate from [`assign`] because a classifier's answer is not a bare
+/// assignment: the confidence, the model and the folder set it was answered
+/// under are what make a re-run possible and a wrong filing explicable.
+pub fn file(
+    conn: &Connection,
+    post_id: &str,
+    category_id: &str,
+    confidence: Option<f64>,
+    score: Option<f64>,
+    model: &str,
+    taxonomy_hash: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO post_categories
+             (post_id, category_id, confidence, score, model, taxonomy_hash, classified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(post_id) DO UPDATE SET
+           category_id   = excluded.category_id,
+           confidence    = excluded.confidence,
+           score         = excluded.score,
+           model         = excluded.model,
+           taxonomy_hash = excluded.taxonomy_hash,
+           classified_at = excluded.classified_at",
+        params![post_id, category_id, confidence, score, model, taxonomy_hash, crate::now()],
+    )?;
+    Ok(())
+}
+
 fn next_id(conn: &Connection) -> Result<String> {
     // Readable ids keep hand-edited databases and CLI output legible; the
     // tree is small, so a counter per prefix is fine.

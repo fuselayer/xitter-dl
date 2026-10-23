@@ -18,3 +18,4 @@ thiserror.workspace = true
 time.workspace = true
 sha2.workspace = true
 getrandom.workspace = true
+ureq.workspace = true

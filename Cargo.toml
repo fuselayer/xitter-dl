@@ -48,6 +48,17 @@ anyhow = "1"
 # stack and a feature surface we would then have to reason about.
 getrandom = "0.3"
 
+# The one outbound HTTP client in the project, and it exists for exactly one
+# caller: the classifier (PRD exception, §7.x). It never talks to X hosts —
+# only to the inference provider the user configured — and it holds no X
+# credential. `rustls` with bundled roots rather than the platform store so a
+# clean machine and a corporate one behave the same.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+# API keys live in the OS credential store, never in a JSON file. On Windows
+# that is Credential Manager, scoped to this user.
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

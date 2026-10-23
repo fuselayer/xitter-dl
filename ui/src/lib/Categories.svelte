@@ -26,7 +26,7 @@
    * A move that would put a folder inside itself is refused by the backend,
    * which is where the cycle check lives; this side just shows the error.
    */
-  import type { Category } from './types';
+  import type { Category, ClassifyProgress, InferenceView } from './types';
   import * as api from './api';
 
   interface Props {
@@ -36,9 +36,13 @@
     total: number;
     /** `label` is passed alongside so the header can name the open folder. */
     onpick: (id: string | null, label: string | null) => void;
+    /** Opens the classifier settings, which live above this panel. */
+    onsettings: () => void;
+    /** Changes when the settings were edited, so the panel re-reads the key. */
+    revision: number;
   }
 
-  let { active, total, onpick }: Props = $props();
+  let { active, total, onpick, onsettings, revision }: Props = $props();
 
   let cats = $state<Category[]>([]);
   let error = $state<string | null>(null);
@@ -96,16 +100,99 @@
     error = String(e);
   }
 
-  $effect(() => {
-    let alive = true;
+  function reload() {
     api
       .categoriesList()
-      .then((list) => alive && apply(list))
-      .catch((e) => alive && fail(e));
+      .then(apply)
+      .catch(fail);
+  }
+
+  $effect(() => {
+    reload();
+  });
+
+  // ── classifier ────────────────────────────────────────────────────────────
+  //
+  // The run lives in the backend; this panel only starts it and draws what
+  // comes back. Progress arrives as events so the window stays live during a
+  // long run — a promise that resolves in eleven minutes would look frozen.
+
+  let infer = $state<InferenceView | null>(null);
+  let running = $state(false);
+  let progress = $state<ClassifyProgress | null>(null);
+  let note = $state<string | null>(null);
+
+  async function loadInference() {
+    try {
+      infer = await api.inferenceConfig();
+    } catch (e) {
+      // A missing key or an unreachable backend is not a reason to hide the
+      // panel; the folders still work, they are just empty.
+      note = String(e);
+    }
+  }
+
+  $effect(() => {
+    // Reading `revision` here is the point: saving a key in Settings has to
+    // flip this panel's button from "add a key" to "file N posts".
+    void revision;
+    void loadInference();
+  });
+
+  $effect(() => {
+    const stops = [
+      api.onClassifyProgress((p) => {
+        running = true;
+        progress = p;
+      }),
+      api.onClassifyDone((d) => {
+        running = false;
+        progress = null;
+        infer = infer ? { ...infer, status: d.status } : infer;
+        const parts = [`${d.report.filed} filed`];
+        if (d.report.failed > 0) parts.push(`${d.report.failed} failed`);
+        if (d.report.cancelled) parts.push('stopped early');
+        note = parts.join(' · ') + (d.report.firstError ? ` — ${d.report.firstError}` : '');
+        reload();
+        void loadInference();
+      }),
+      api.onClassifyError((message) => {
+        running = false;
+        progress = null;
+        note = message;
+        void loadInference();
+      }),
+    ];
     return () => {
-      alive = false;
+      for (const stop of stops) void stop.then((off) => off());
     };
   });
+
+  async function startClassify(force: boolean) {
+    note = null;
+    try {
+      await api.classifyStart(force);
+      running = true;
+      progress = { done: 0, considered: infer?.status.pending ?? 0, failed: 0 };
+    } catch (e) {
+      note = String(e);
+      running = false;
+    }
+  }
+
+  async function stopClassify() {
+    try {
+      await api.classifyCancel();
+    } catch (e) {
+      note = String(e);
+    }
+  }
+
+  const pct = $derived(
+    progress && progress.considered > 0
+      ? Math.min(100, Math.round((progress.done / progress.considered) * 100))
+      : 0,
+  );
 
   // ── create / rename / delete ──────────────────────────────────────────────
 
@@ -481,6 +568,42 @@
     <p class="hint">Drag one folder onto another to nest it.</p>
   {/if}
 
+  <!-- Filing is the panel's job, so the control that fills the folders lives
+       here rather than in Settings: you look at the empty folders, then press
+       the button next to them. -->
+  <div class="classify">
+    {#if !infer}
+      <p class="hint">No classifier configured.</p>
+    {:else if !infer.hasKey}
+      <button class="run" onclick={onsettings}>Add a key to file posts</button>
+    {:else if running}
+      <div class="bar" aria-hidden="true"><span style="width: {pct}%"></span></div>
+      <div class="runrow">
+        <span class="count">
+          {progress ? `${progress.done} of ${progress.considered}` : 'starting…'}
+          {#if progress && progress.failed > 0}· {progress.failed} failed{/if}
+        </span>
+        <button class="stop" onclick={stopClassify}>Stop</button>
+      </div>
+    {:else}
+      <div class="runrow">
+        {#if infer.status.pending > 0}
+          <button class="run" onclick={() => startClassify(false)}>
+            File {infer.status.pending} post{infer.status.pending === 1 ? '' : 's'}
+          </button>
+        {:else}
+          <button class="run quiet" onclick={() => startClassify(true)}>Re-file everything</button>
+        {/if}
+      </div>
+      {#if infer.status.filed > 0 && infer.status.pending > 0}
+        <button class="again" onclick={() => startClassify(true)} title="Re-run every post, not only the waiting ones">
+          or re-file everything
+        </button>
+      {/if}
+    {/if}
+    {#if note}<p class="note">{note}</p>{/if}
+  </div>
+
   {#if drag}
     <div class="goo" style="filter: url(#cat-goo)">
       {#each drag.boxes as b (b.id)}
@@ -759,6 +882,93 @@
     height: 2px;
     background: var(--accent);
     border-radius: 2px;
+  }
+
+  /* ── classifier controls ───────────────────────────────────────────────── */
+
+  .classify {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 2px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+
+  .runrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .run {
+    flex: 1;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-primary);
+    border-radius: 9999px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .run:hover {
+    background: var(--bg-hover);
+  }
+
+  .run.quiet {
+    border-color: transparent;
+    color: var(--text-secondary);
+    font-weight: 400;
+  }
+
+  .again,
+  .stop,
+  .count {
+    border: 0;
+    background: none;
+    color: var(--text-secondary);
+    font-size: 12px;
+    padding: 0;
+  }
+
+  .again {
+    text-align: left;
+    text-decoration: underline;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+
+  .stop {
+    margin-left: auto;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+
+  .count {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .bar {
+    height: 2px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .bar span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width 220ms linear;
+  }
+
+  .note {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
   }
 
   @media (prefers-reduced-motion: reduce) {

@@ -15,7 +15,17 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { Category, ImportResult, LibraryStats, PostView, SearchHit } from './types';
+import type {
+  Category,
+  ClassifyDone,
+  ClassifyProgress,
+  InferenceView,
+  ImportResult,
+  LibraryStats,
+  PostView,
+  SearchHit,
+  TestResult,
+} from './types';
 
 /** True when running inside the Tauri shell rather than a plain browser. */
 export function isTauri(): boolean {
@@ -229,4 +239,48 @@ export async function onBridgeEvent(
   handler: (event: BridgeEvent) => void
 ): Promise<() => void> {
   return listen<BridgeEvent>('xdl://bridge', (event) => handler(event.payload));
+}
+
+// ── classifier ───────────────────────────────────────────────────────────────
+// The key is write-only from here: `key` is sent once and never returned. The
+// reply only says whether one is stored and its last four characters.
+
+export async function inferenceConfig(): Promise<InferenceView> {
+  return invoke<InferenceView>('inference_config');
+}
+
+export async function inferenceSave(
+  provider: string,
+  baseUrl: string,
+  model: string,
+  key: string | null,
+  sendImages: boolean,
+): Promise<InferenceView> {
+  return invoke<InferenceView>('inference_save', { provider, baseUrl, model, key, sendImages });
+}
+
+/** One round-trip on a throwaway sentence; proves host, model and key at once. */
+export async function inferenceTest(): Promise<TestResult> {
+  return invoke<TestResult>('inference_test');
+}
+
+/** Starts a run and returns immediately; progress arrives as events. */
+export async function classifyStart(force = false, limit: number | null = null): Promise<void> {
+  return invoke('classify_start', { force, limit });
+}
+
+export async function classifyCancel(): Promise<void> {
+  return invoke('classify_cancel');
+}
+
+export function onClassifyProgress(fn: (p: ClassifyProgress) => void): Promise<() => void> {
+  return listen<ClassifyProgress>('classify:progress', (e) => fn(e.payload));
+}
+
+export function onClassifyDone(fn: (d: ClassifyDone) => void): Promise<() => void> {
+  return listen<ClassifyDone>('classify:done', (e) => fn(e.payload));
+}
+
+export function onClassifyError(fn: (message: string) => void): Promise<() => void> {
+  return listen<string>('classify:error', (e) => fn(e.payload));
 }

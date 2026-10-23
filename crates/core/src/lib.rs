@@ -32,6 +32,7 @@ pub mod categories;
 pub mod db;
 pub mod error;
 pub mod import;
+pub mod inference;
 pub mod media;
 pub mod model;
 pub mod search;

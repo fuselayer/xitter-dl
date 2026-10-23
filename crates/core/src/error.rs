@@ -47,6 +47,13 @@ pub enum Error {
 
     #[error("{0}")]
     Invalid(String),
+
+    /// A call to the inference provider failed: transport, TLS, a status the
+    /// provider returned, or a body we could not read. Kept apart from
+    /// [`Error::Invalid`] because "the user typed something wrong" and "the
+    /// network is down" want different words in front of a human.
+    #[error("{0}")]
+    Network(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

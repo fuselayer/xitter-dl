@@ -201,6 +201,67 @@ export interface Category {
   total: number;
 }
 
+/** One provider the UI can offer, as the backend defines it. */
+export interface ProviderPreset {
+  id: string;
+  label: string;
+  baseUrl: string;
+  model: string;
+}
+
+export interface ProviderView {
+  id: string;
+  baseUrl: string;
+  model: string;
+}
+
+export interface ClassifyStatus {
+  total: number;
+  filed: number;
+  /** Bookmarks with no verdict, or one reached under folders that changed. */
+  pending: number;
+  lastAt: number | null;
+}
+
+export interface InferenceView {
+  provider: ProviderView;
+  presets: ProviderPreset[];
+  hasKey: boolean;
+  /** Last four characters, for recognising which key is saved. Never the key. */
+  keyHint: string | null;
+  sendImages: boolean;
+  status: ClassifyStatus;
+}
+
+export interface ClassifyProgress {
+  done: number;
+  considered: number;
+  failed: number;
+}
+
+export interface RunReport {
+  considered: number;
+  filed: number;
+  failed: number;
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+  firstError: string | null;
+  cancelled: boolean;
+}
+
+export interface ClassifyDone {
+  report: RunReport;
+  status: ClassifyStatus;
+}
+
+export interface TestResult {
+  model: string;
+  /** The model's probability that the probe sentence is a test message. */
+  yes: number | null;
+  latencyMs: number;
+}
+
 export interface LibraryStats {
   posts: number;
   bookmarks: number;
