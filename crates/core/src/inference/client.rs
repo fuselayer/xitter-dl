@@ -46,6 +46,10 @@ pub struct Client {
     gate: std::sync::Mutex<Option<Instant>>,
     /// The gap the account is entitled to, from `requests_per_minute`.
     interval: Duration,
+    /// Stop button. A one-a-minute account spends almost all of a run inside
+    /// [`Self::pace`], so a sleep that cannot be interrupted turns Stop into
+    /// "Stopping…" for as long as the remaining wait.
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Why a call did not produce an answer, split by whether trying again could
@@ -68,7 +72,25 @@ impl Client {
         let per_minute = u64::from(config.requests_per_minute.max(1));
         let interval =
             Duration::from_millis((60_000 / per_minute).max(1)).max(MIN_INTERVAL);
-        Self { agent, key, config, gate: std::sync::Mutex::new(None), interval }
+        Self {
+            agent,
+            key,
+            config,
+            gate: std::sync::Mutex::new(None),
+            interval,
+            cancel: None,
+        }
+    }
+
+    /// Let the run's cancel flag cut a wait short.
+    pub fn watch(&mut self, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.cancel = Some(cancel);
+    }
+
+    fn stopped(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     pub fn config(&self) -> &ProviderConfig {
@@ -80,15 +102,26 @@ impl Client {
     /// The lock is held across the sleep on purpose: this is a queue of one,
     /// and letting four workers each compute the same wait from the same start
     /// time would send four requests anyway.
-    fn pace(&self) {
+    fn pace(&self) -> bool {
         let mut last = self.gate.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(previous) = *last {
-            let wait = self.interval.saturating_sub(previous.elapsed());
-            if !wait.is_zero() {
-                std::thread::sleep(wait);
+            let mut wait = self.interval.saturating_sub(previous.elapsed());
+            // In slices, so Stop lands while the queue is waiting rather than
+            // after the whole minute has been served.
+            while !wait.is_zero() {
+                if self.stopped() {
+                    return false;
+                }
+                let slice = wait.min(Duration::from_millis(50));
+                std::thread::sleep(slice);
+                wait -= slice;
             }
         }
+        if self.stopped() {
+            return false;
+        }
         *last = Some(Instant::now());
+        true
     }
 
     /// Classify one post.
@@ -212,7 +245,9 @@ impl Client {
             request = request.set("TypeSafe-Danger-Zone-Images", "true");
         }
 
-        self.pace();
+        if !self.pace() {
+            return Err(Failure::Fatal("stopped".into()));
+        }
         let response = match request.send_string(payload) {
             Ok(response) => response,
             Err(ureq::Error::Status(code, response)) => {

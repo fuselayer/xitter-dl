@@ -329,6 +329,15 @@ pub fn assign(conn: &Connection, post_id: &str, category_id: &str) -> Result<()>
 /// Separate from [`assign`] because a classifier's answer is not a bare
 /// assignment: the confidence, the model and the folder set it was answered
 /// under are what make a re-run possible and a wrong filing explicable.
+/// Remove every verdict, leaving the folders untouched.
+///
+/// The run's own candidate query treats a missing verdict as "not yet filed", so
+/// this is the same thing as starting from scratch — without rebuilding the
+/// tree someone spent time describing.
+pub fn clear_all(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute("DELETE FROM post_categories", [])?)
+}
+
 pub fn file(
     conn: &Connection,
     post_id: &str,

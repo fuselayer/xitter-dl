@@ -233,6 +233,12 @@ pub fn run(
                 drop(tx);
 
                 for (post_id, outcome) in rx {
+                    // Results that arrive after Stop are not failures; the
+                    // person asked for the run to end, not for a tally of what
+                    // was in flight when they said so.
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
                     done += 1;
                     match outcome {
                         Ok(outcome) => {

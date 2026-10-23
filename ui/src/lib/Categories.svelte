@@ -130,6 +130,9 @@
   let running = $state(false);
   /** A stop request is in flight: the run checks it between waves. */
   let stopping = $state(false);
+  /** First click arms, second click deletes — the same two-click shape as a folder delete. */
+  let clearArmed = $state(false);
+  let clearing = $state(false);
   let progress = $state<ClassifyProgress | null>(null);
   let note = $state<string | null>(null);
   /**
@@ -233,9 +236,41 @@
   async function stopClassify() {
     stopping = true;
     try {
-      await api.classifyCancel();
+      const wasRunning = await api.classifyCancel();
+      // A Stop pressed after the run ended has nothing to wait for.
+      if (!wasRunning) {
+        stopping = false;
+        running = false;
+        progress = null;
+        return;
+      }
+      // The request already on the wire cannot be recalled; say so rather than
+      // looking frozen while it returns.
+      setTimeout(() => {
+        if (stopping && running) note = 'Stopping — waiting for the request in flight to return.';
+      }, 4000);
     } catch (e) {
       note = String(e);
+      stopping = false;
+    }
+  }
+
+  async function unsortAll() {
+    if (!clearArmed) {
+      clearArmed = true;
+      setTimeout(() => (clearArmed = false), 4000);
+      return;
+    }
+    clearArmed = false;
+    clearing = true;
+    try {
+      infer = await api.classifyReset();
+      note = 'Every post is unsorted. The folders are untouched.';
+      reload();
+    } catch (e) {
+      note = String(e);
+    } finally {
+      clearing = false;
     }
   }
 
@@ -683,6 +718,22 @@
       {#if infer.status.filed > 0 && infer.status.pending > 0}
         <button class="again" onclick={() => startClassify(true)} title="Re-run every post, not only the waiting ones">
           or re-file everything
+        </button>
+      {/if}
+      {#if infer.status.filed > 0}
+        <button
+          class="again"
+          onclick={unsortAll}
+          disabled={clearing}
+          title="Delete every filing and start clean. The folders stay."
+        >
+          {#if clearing}
+            Unsorting…
+          {:else if clearArmed}
+            Unsort all {infer.status.filed}? Click again
+          {:else}
+            Unsort everything
+          {/if}
         </button>
       {/if}
     {/if}

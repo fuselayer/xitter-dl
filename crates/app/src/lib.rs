@@ -478,12 +478,9 @@ fn classify_start(
             }
             crumb(&db_path, &format!("{} folders", cats.len()));
 
-            let client = Client::new(settings.provider.clone(), key);
+            let mut client = Client::new(settings.provider.clone(), key);
+            client.watch(cancel.clone());
 
-            // One cheap request before a hundred expensive ones. If the host is
-            // unreachable, the key lapsed or a quota is spent, this fails in
-            // seconds with the provider's own words instead of leaving a run
-            // to discover it three minutes into the first wave.
             // No probe. On a one-request-a-minute account the probe *is* the
             // minute: pressing Test in Settings and then File 100 meant the
             // first post arrived inside a window the probe had just spent.
@@ -547,9 +544,27 @@ fn crumb(db_path: &Path, step: &str) {
 }
 
 #[tauri::command]
-fn classify_cancel(state: State<'_, AppState>) -> Result<(), String> {
+fn classify_cancel(state: State<'_, AppState>) -> Result<bool, String> {
     state.cancel.store(true, Ordering::SeqCst);
-    Ok(())
+    // Answers "was there anything to stop", so a Stop pressed after the run
+    // ended resets the button instead of leaving it saying "Stopping…".
+    Ok(state.classifying.load(Ordering::SeqCst))
+}
+
+/// Throw away every verdict. The folders stay; the filings go.
+#[tauri::command]
+fn classify_reset(state: State<'_, AppState>) -> Result<InferenceView, String> {
+    if state.classifying.load(Ordering::SeqCst) {
+        return Err("a run is in progress — stop it first".into());
+    }
+    {
+        let mut lib = state
+            .writer
+            .lock()
+            .map_err(|_| "library busy".to_string())?;
+        categories::clear_all(lib.conn_mut()).map_err(err)?;
+    }
+    inference_view(&state)
 }
 
 #[tauri::command]
@@ -993,6 +1008,7 @@ pub fn run() {
             inference_test,
             classify_start,
             classify_cancel,
+            classify_reset,
             classify_status,
             get_post,
             posts_by_ids,

@@ -284,8 +284,13 @@ export async function classifyStart(force = false, limit: number | null = null):
   return invoke('classify_start', { force, limit });
 }
 
-export async function classifyCancel(): Promise<void> {
-  return invoke('classify_cancel');
+export async function classifyCancel(): Promise<boolean> {
+  return invoke<boolean>('classify_cancel');
+}
+
+/** Delete every filing. The folders themselves stay. */
+export async function classifyReset(): Promise<InferenceView> {
+  return invoke<InferenceView>('classify_reset');
 }
 
 export function onClassifyProgress(fn: (p: ClassifyProgress) => void): Promise<() => void> {
