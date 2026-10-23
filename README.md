@@ -25,7 +25,7 @@ No API, no OAuth, no scraping service, no cloud, no account, no recurring cost.
 | Classifier | User-defined folders, JEV over your own key — see [Categories and classification](#categories-and-classification) |
 | Media | Thumbnails only — see [Media is thumbnails only](#media-is-thumbnails-only) |
 
-Rust: `198` tests. JavaScript: `41`.
+Rust: `201` tests. JavaScript: `41`.
 
 ---
 
@@ -364,14 +364,17 @@ whose build script passes `-DSQLITE_ENABLE_FTS5` to the C compiler. The
 
 ## Categories and classification
 
-The right rail holds folders, and a folder can hold folders: drag one onto
-another to nest it, onto a top or bottom edge to reorder, onto the header to
-pull it back out. They are not X's interest tabs. Every folder is a name and a
-sentence saying what belongs in it, and both are yours — the same word means
-different things to different people, so the definition travels with the name.
+Folders are the tab strip under the page title, where X keeps its tabs: the
+open one is bold with the accent bar, long names scroll sideways instead of
+being cut off. Clicking one filters the feed with a recursive query, so a parent
+shows everything inside its children. A child does not get its own tab (the
+parent already includes it) unless you are in it.
 
-Clicking a folder filters the feed with a recursive query, so a parent shows
-everything inside its children.
+The right rail is the editor: drag one folder onto another to nest it, onto a
+top or bottom edge to reorder, onto the header to pull it back out. They are not
+X's interest tabs. Every folder is a name and a sentence saying what belongs in
+it, and both are yours — the same word means different things to different
+people, so the definition travels with the name.
 
 Filling them is the classifier's job. **Settings → Classification** takes a
 provider (TypeSafe, OpenCode Zen, or any host serving the same API), a model and
@@ -379,9 +382,21 @@ an API key. The key goes to Windows Credential Manager: it is never written to
 `settings.json`, never sent to the webview, and cannot be read back after
 saving — only "saved ••••1234".
 
-A run sends one structured request per post: the post as `state`, a `choice`
-question whose criteria are your folders, and a `score` question for how central
-the post is to whichever folder it lands in. What is stored is the verdict, its
+A run sends one structured request per post: the post as `state` (with any
+quoted post attached), a `choice` question whose criteria are your folders, and
+a `score` question for how central the post is to whichever folder it lands in.
+Each choice is described by its path and its sentence — `Finance / Crypto —
+chains, tokens, exchanges` — because a name alone is what the API falls back to,
+and `Finance` beside `Trading` beside `VC` needs the boundary stated. A folder
+with no sentence contributes only its path, so the panel says how many are in
+that state before a run starts.
+
+**Unsorted** is a folder the classifier creates the first time it runs, and it
+exists so the question has a way out. Without it every post must land somewhere,
+and a post that is a bare link gets filed at 1.00 confidence because there is
+nothing to be unsure about — the question simply had no "none". Posts that fit
+nothing else go there; it is an ordinary folder, so it can be renamed, nested or
+emptied. What is stored is the verdict, its
 confidence, the score and the model that said so. An image post — a photo with a
 link and nothing else — is sent as an image, with the
 `TypeSafe-Danger-Zone-Images` header the endpoint requires; a post with a picture
@@ -391,7 +406,13 @@ vision.
 Nothing is filed until you press the button in the categories panel, and that
 button sends a capped run by default — 25, 100, 250 or 500 posts, newest first,
 with `all` as a deliberate choice — because a library-wide run is a bill and the
-first one should be a sample. Runs are resumable: a post that failed has no verdict, so the next run retries it, and
+first one should be a sample. Requests are paced to roughly 190 a minute across
+all workers: a free tier's window closes after about that many, and four workers
+with no gate spend it in twenty seconds, after which every retry lands inside
+the closed window and the run looks like it died. A rate limit now pauses the
+run for thirty seconds and carries on, and every wave is appended to
+`classify.log` beside the library, so a run that stops has a reason on disk
+instead of in a webview that the next click replaced. Runs are resumable: a post that failed has no verdict, so the next run retries it, and
 editing one folder's sentence re-runs exactly the posts whose verdict was
 reached under the old wording. Deleting a folder takes its subfolders and their
 verdicts with it, and never touches the posts.
@@ -422,9 +443,11 @@ uploaded a logo) are drawn as a slightly rounded square rather than cropped into
 a circle; the field is read from the stored raw payload, so it applies to posts
 already in the library.
 
-**Who fetches it.** The userscript, never the app. The app still links no HTTP
-client and holds no X credential (PRD §4.3); the browser is the only place an
-image request can legitimately originate. Note this is not the "cache hit" an
+**Who fetches it.** The userscript, never the app. The app links exactly one
+HTTP client — the classifier's, in `xdl_core::inference`, which reaches the
+endpoint configured in Settings and nothing else — and holds no X credential
+(PRD §4.3); the browser is the only place an image request can legitimately
+originate. Note this is not the "cache hit" an
 earlier draft described: the payload carries a bare URL and the variant the
 page rendered lives only in the DOM the script refuses to read, so every
 thumbnail is one deliberate request.

@@ -40,6 +40,39 @@ pub struct Category {
 ///
 /// The window builds the tree itself: one flat pass is cheaper over IPC than a
 /// nested structure, and a flat list keeps "drag into" a single-row update.
+/// Where the classifier files a post that fits nothing else.
+///
+/// A choice with no way out is not a choice: given only real folders, a model
+/// asked to pick one will pick one — confidently — even for a bare link. This
+/// folder is that way out, and it is an ordinary folder so the posts that land
+/// there can be read, renamed and argued with.
+pub const UNSORTED_ID: &str = "unsorted";
+pub const UNSORTED_LABEL: &str = "Unsorted";
+pub const UNSORTED_CRITERIA: &str = "The post fits none of the other folders, or there is too little of it to judge: a bare link, a bare image, or a reply with no subject.";
+
+/// Make sure the escape hatch exists. Idempotent, and never touches the
+/// user's own folders — if it was renamed, the id still holds the verdict.
+pub fn ensure_unsorted(conn: &Connection) -> Result<()> {
+    let exists = conn
+        .query_row("SELECT 1 FROM categories WHERE id = ?1", params![UNSORTED_ID], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if exists {
+        return Ok(());
+    }
+    let position: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(position) + 1, 0) FROM categories WHERE parent_id IS NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO categories (id, parent_id, label, criteria, position, created_at)
+         VALUES (?1, NULL, ?2, ?3, ?4, ?5)",
+        params![UNSORTED_ID, UNSORTED_LABEL, UNSORTED_CRITERIA, position, crate::now()],
+    )?;
+    Ok(())
+}
+
 pub fn list(conn: &Connection) -> Result<Vec<Category>> {
     let mut counts = std::collections::HashMap::new();
     {
@@ -350,6 +383,25 @@ mod tests {
         crate::db::configure(&conn).unwrap();
         crate::db::migrate(&mut conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn the_escape_hatch_is_created_once_and_never_overwritten() {
+        let conn = db();
+
+        ensure_unsorted(&conn).unwrap();
+        let first = list(&conn).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].id, UNSORTED_ID);
+        assert!(first[0].criteria.contains("fits none"));
+
+        // Renaming it is the user's business; the id is what a verdict stores,
+        // so a second call must not clobber the name.
+        update(&conn, UNSORTED_ID, "Cherries", "odd ones").unwrap();
+        ensure_unsorted(&conn).unwrap();
+        let again = list(&conn).unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].label, "Cherries");
     }
 
     #[test]

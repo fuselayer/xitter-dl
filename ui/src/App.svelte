@@ -26,6 +26,18 @@
   let error = $state<string | null>(null);
   let loading = $state(true);
   /**
+   * Rows per request.
+   *
+   * The whole library is 1,352 posts and growing; six hundred of them in one
+   * IPC reply means the first paint waits on every avatar, preview and text
+   * clamp before anything appears. Sixty is roughly one screen and a bit, so
+   * the tab switches immediately and the rest arrives while you read.
+   */
+  const PAGE = 60;
+  let complete = $state(false);
+  let loadingMore = $state(false);
+  let sentinel = $state<HTMLElement | null>(null);
+  /**
    * The folder the feed is showing, or null for the whole library. The filter
    * runs in SQL rather than over the loaded list, so opening a folder is one
    * query, not a client-side pass over five hundred rows.
@@ -92,7 +104,11 @@
     error = null;
     try {
       if (api.isTauri()) {
-        posts = await api.listBookmarks(500, 0, activeCategory);
+        // Keep whatever has been scrolled into view: a capture arriving must
+        // not collapse a 240-row feed back to the first 60 under the reader.
+        const want = Math.max(PAGE, posts.length);
+        posts = await api.listBookmarks(want, 0, activeCategory);
+        complete = posts.length < want;
         libraryStats = await api.stats();
       } else {
         error =
@@ -106,6 +122,40 @@
       loading = false;
     }
   }
+
+  /** The next window, appended. Called by the sentinel and by "Load more". */
+  async function more() {
+    if (!api.isTauri() || complete || loadingMore || hits !== null) return;
+    loadingMore = true;
+    try {
+      const next = await api.listBookmarks(PAGE, posts.length, activeCategory);
+      if (next.length < PAGE) complete = true;
+      // A capture landing between two pages shifts the offset by one; keyed
+      // rows make a repeat harmless, a duplicate is not.
+      const seen = new Set(posts.map((p) => p.id));
+      posts = posts.concat(next.filter((p) => !seen.has(p.id)));
+    } catch (e) {
+      error = String(e);
+    } finally {
+      loadingMore = false;
+    }
+  }
+
+  // Load the next window when the end of the feed comes into view, and again
+  // when the shorter list puts a new end there. `untrack` keeps the observer
+  // from depending on the list it appends to.
+  $effect(() => {
+    const el = sentinel;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) untrack(() => void more());
+      },
+      { rootMargin: '800px 0px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  });
 
   // Refresh when the open folder changes — and only then.
   //
@@ -419,6 +469,16 @@
             <Tweet {post} variant="timeline" onOpenLink={openLink} />
           </div>
         {/each}
+
+        {#if hits === null}
+          <div class="sentinel" bind:this={sentinel}>
+            {#if loadingMore}
+              <span class="more-note">Loading…</span>
+            {:else if !complete}
+              <button class="more-note" onclick={() => more()}>Load more</button>
+            {/if}
+          </div>
+        {/if}
       {/if}
     </main>
 
@@ -716,7 +776,28 @@
     backdrop-filter: blur(12px);
   }
 
-  .listhead {
+  .sentinel {
+    display: flex;
+    justify-content: center;
+    padding: 18px 16px 28px;
+    min-height: 1px;
+  }
+
+  .more-note {
+    border: 0;
+    background: none;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 6px 10px;
+  }
+
+  .more-note:hover {
+    color: var(--text-primary);
+  }
+
+  .hairline {
     padding: 8px 16px 10px;
   }
 

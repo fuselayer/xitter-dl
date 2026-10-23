@@ -412,6 +412,7 @@ fn classify_start(
         let key = keys::get(&settings.provider.id)
             .ok_or_else(|| "add an API key in Settings first".to_string())?;
         let lib = state.reader()?;
+        categories::ensure_unsorted(lib.conn()).map_err(err)?;
         let cats = categories::list(lib.conn()).map_err(err)?;
         if cats.is_empty() {
             return Err("make a folder first".into());
@@ -437,6 +438,7 @@ fn classify_start(
                 let media_dir = lib
                     .media_dir()
                     .unwrap_or_else(|| db_path.parent().unwrap_or(Path::new(".")).join("media"));
+                categories::ensure_unsorted(lib.conn())?;
                 let cats = categories::list(lib.conn())?;
                 let client = Client::new(settings.provider.clone(), key);
                 let report = classify(

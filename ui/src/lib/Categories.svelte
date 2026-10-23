@@ -172,7 +172,9 @@
         progress = null;
         infer = infer ? { ...infer, status: d.status } : infer;
         const parts = [`${d.report.filed} filed`];
+        if (d.report.unsorted > 0) parts.push(`${d.report.unsorted} unsorted`);
         if (d.report.failed > 0) parts.push(`${d.report.failed} failed`);
+        if (d.report.rateLimited) parts.push('waited out a rate limit');
         if (d.report.cancelled) parts.push('stopped early');
         note = parts.join(' · ') + (d.report.firstError ? ` — ${d.report.firstError}` : '');
         reload();
@@ -209,6 +211,18 @@
       note = String(e);
     }
   }
+
+  /**
+   * Folders the model has only a name for.
+   *
+   * The API documents that a choice without a description "is interpreted by
+   * its name alone" — which, for overlapping names like Finance/Trading/VC, is
+   * the difference between filing and guessing. Saying so is cheaper than
+   * letting a bad run look like a bad model. "Unsorted" ships with its own.
+   */
+  const undefinedFolders = $derived(
+    cats.filter((c) => c.id !== 'unsorted' && !c.criteria.trim()).length,
+  );
 
   /** What this run would actually send: the cap, or what is left. */
   const take = $derived(
@@ -635,6 +649,12 @@
           <button class="run quiet" onclick={() => startClassify(true)}>Re-file everything</button>
         {/if}
       </div>
+      {#if infer.status.pending > 0 && undefinedFolders > 0}
+        <p class="hint">
+          {undefinedFolders} folder{undefinedFolders === 1 ? ' has' : 's have'} no definition — JEV
+          sees only the name. Double-click one to describe what belongs in it.
+        </p>
+      {/if}
       {#if infer.status.filed > 0 && infer.status.pending > 0}
         <button class="again" onclick={() => startClassify(true)} title="Re-run every post, not only the waiting ones">
           or re-file everything

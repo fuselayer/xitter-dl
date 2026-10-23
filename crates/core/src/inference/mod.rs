@@ -148,15 +148,28 @@ impl ProviderConfig {
 /// thing the taxonomy hash is computed over; two runs over the same folders
 /// must produce byte-identical requests.
 pub fn criteria_of(cats: &[crate::categories::Category]) -> Result<BTreeMap<String, String>> {
+    let paths = paths_of(cats);
     let mut map = BTreeMap::new();
     for cat in cats {
         let label = cat.label.trim();
         if label.is_empty() {
             return Err(Error::Invalid("a folder has no name".into()));
         }
+        // The description starts with where the folder sits, because a nested
+        // name alone ("Crypto") does not say it lives under "Finance". When the
+        // user has written a definition, it follows the path; when they have
+        // not, the path is all the model gets beyond the name — which the API
+        // documents as "interpreted by its name alone".
+        let path = paths.get(&cat.id).map(String::as_str).unwrap_or(label);
+        let definition = cat.criteria.trim();
+        let description = if definition.is_empty() {
+            path.to_string()
+        } else {
+            format!("{path} — {definition}")
+        };
         // Two folders with one name would make the returned choice ambiguous,
         // and the answer is a *name*, not an id.
-        if map.insert(label.to_string(), cat.criteria.trim().to_string()).is_some() {
+        if map.insert(label.to_string(), description).is_some() {
             return Err(Error::Invalid(format!(
                 "two folders are called “{label}” — rename one so the classifier can tell them apart"
             )));
@@ -171,24 +184,60 @@ pub fn criteria_of(cats: &[crate::categories::Category]) -> Result<BTreeMap<Stri
     Ok(map)
 }
 
+/// "Finance / Crypto" for every folder, from the tree the user built.
+///
+/// A tab strip cannot show nesting and this map is where that information
+/// survives: the classifier is the one consumer that can use it.
+fn paths_of(cats: &[crate::categories::Category]) -> BTreeMap<String, String> {
+    let by_id: BTreeMap<&str, &crate::categories::Category> =
+        cats.iter().map(|c| (c.id.as_str(), c)).collect();
+    let mut out = BTreeMap::new();
+    for cat in cats {
+        let mut parts = vec![cat.label.trim().to_string()];
+        let mut parent = cat.parent_id.as_deref();
+        // A cycle cannot exist (move_to refuses one), but a corrupt database
+        // should not hang a run while it walks upward.
+        for _ in 0..64 {
+            let Some(id) = parent else { break };
+            let Some(p) = by_id.get(id) else { break };
+            parts.insert(0, p.label.trim().to_string());
+            parent = p.parent_id.as_deref();
+        }
+        out.insert(cat.id.clone(), parts.join(" / "));
+    }
+    out
+}
+
 /// A stable fingerprint of the folder set: label and definition, by id.
 ///
 /// When it changes, every stored verdict was reached under a different
 /// question and is worth re-running.
 pub fn taxonomy_hash(cats: &[crate::categories::Category]) -> String {
     use sha2::{Digest, Sha256};
-    let mut items: Vec<(&str, &str, &str)> = cats
+    let mut items: Vec<(&str, &str, &str, &str)> = cats
         .iter()
-        .map(|c| (c.id.as_str(), c.label.trim(), c.criteria.trim()))
+        .map(|c| {
+            (
+                c.id.as_str(),
+                c.label.trim(),
+                c.criteria.trim(),
+                c.parent_id.as_deref().unwrap_or(""),
+            )
+        })
         .collect();
     items.sort();
     let mut hasher = Sha256::new();
-    for (id, label, criteria) in items {
+    // The parent is part of the fingerprint: moving Crypto under Finance
+    // changes the description the model is given, so verdicts reached in the
+    // old place are worth re-asking.
+    for (id, label, criteria, parent) in items {
         hasher.update(id.as_bytes());
         hasher.update(b"\x1f");
         hasher.update(label.as_bytes());
         hasher.update(b"\x1f");
         hasher.update(criteria.as_bytes());
+        hasher.update(b"\x1f");
+        hasher.update(parent.as_bytes());
         hasher.update(b"\x1e");
     }
     let hex = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>();
@@ -266,7 +315,7 @@ pub fn build_body(
         CATEGORY_QUESTION.to_string(),
         serde_json::json!({
             "type": "choice",
-            "instructions": "Which folder does this post belong in?",
+            "instructions": "Choose the one folder this post belongs in. Judge by each folder's description, not by whether its name appears in the post. Choose “Unsorted” when no other folder's description fits, or when the post is only a link, an image, or a fragment with nothing to judge.",
             "criteria": criteria,
         }),
     );
@@ -274,7 +323,7 @@ pub fn build_body(
         FIT_QUESTION.to_string(),
         serde_json::json!({
             "type": "score",
-            "instructions": "How central is this post's subject to the folder you chose?",
+            "instructions": "How central is this post to the folder chosen above? A post that merely mentions the topic is low; a post that is about it is high.",
             "criteria": FIT_LEVELS,
         }),
     );
@@ -447,7 +496,7 @@ mod tests {
     fn the_body_asks_two_questions_and_only_carries_an_asset_for_an_image_plan() {
         let criteria = criteria_of(&[cat("c1", "AI", "models")]).unwrap();
         let text = build_body("jev-x", &Plan::Text { state: "hello".into() }, &criteria, None);
-        assert_eq!(text["questions"][CATEGORY_QUESTION]["criteria"]["AI"], "models");
+        assert_eq!(text["questions"][CATEGORY_QUESTION]["criteria"]["AI"], "AI — models");
         assert!(text["questions"][FIT_QUESTION]["criteria"].as_array().is_some());
         assert!(text.get("assets").is_none());
 
@@ -490,6 +539,30 @@ mod tests {
         });
         let err = parse_answer(&body, &criteria).unwrap_err().to_string();
         assert!(err.contains("not one of your folders"), "{err}");
+    }
+
+    #[test]
+    fn a_nested_folder_tells_the_model_where_it_sits() {
+        // "Crypto" under "Finance" is a different question from "Crypto" at the
+        // root, and the choice name alone cannot say which one was asked.
+        let mut child = cat("c2", "Crypto", "");
+        child.parent_id = Some("c1".into());
+        let criteria = criteria_of(&[cat("c1", "Finance", ""), child.clone()]).unwrap();
+        assert_eq!(criteria["Crypto"], "Finance / Crypto");
+
+        child.criteria = "chains, tokens, exchanges".into();
+        let with_definition = criteria_of(&[cat("c1", "Finance", ""), child]).unwrap();
+        assert_eq!(with_definition["Crypto"], "Finance / Crypto — chains, tokens, exchanges");
+    }
+
+    #[test]
+    fn moving_a_folder_changes_the_taxonomy_hash() {
+        let mut child = cat("c2", "Crypto", "chains");
+        child.parent_id = Some("c1".into());
+        let under_finance = vec![cat("c1", "Finance", ""), child.clone()];
+        child.parent_id = Some("c3".into());
+        let under_root = vec![cat("c3", "Markets", ""), child];
+        assert_ne!(taxonomy_hash(&under_finance), taxonomy_hash(&under_root));
     }
 
     #[test]

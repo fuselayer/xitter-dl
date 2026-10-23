@@ -24,6 +24,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -35,6 +36,14 @@ use super::{criteria_of, plan, taxonomy_hash, Client, Outcome, Plan};
 /// Requests in flight per wave, per worker. Eight is enough to hide latency
 /// without piling up a hundred queued posts behind one rate limit.
 const WAVES_PER_WORKER: usize = 4;
+
+/// How many free-tier windows a run waits out before it gives up.
+///
+/// A rate limit is not a failure — the posts are fine, the account is early.
+/// Waiting is the difference between a run that files 190 posts and one that
+/// files 190 posts and then apologises.
+const RATE_STALLS: u32 = 3;
+const RATE_PAUSE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct RunOptions {
@@ -68,6 +77,10 @@ pub struct RunReport {
     /// The first failure, in the provider's words. The rest are counted only;
     /// a run that fails 400 times for one reason should not send 400 sentences.
     pub first_error: Option<String>,
+    /// Filed into "Unsorted": the model's way of saying nothing fit.
+    pub unsorted: u64,
+    /// A rate limit was waited out (once or more) rather than ending the run.
+    pub rate_limited: bool,
     pub cancelled: bool,
 }
 
@@ -163,6 +176,7 @@ pub fn run(
     let workers = opts.workers.clamp(1, 16);
     let wave_size = workers * WAVES_PER_WORKER;
     let mut done = 0u64;
+    let mut stalls = 0u32;
 
     for wave in candidates.chunks(wave_size) {
         if cancel.load(Ordering::Relaxed) {
@@ -198,11 +212,17 @@ pub fn run(
                 .collect::<Vec<(String, Result<Outcome>)>>()
         });
 
+        // Per-wave, not cumulative: "the first wave worked" must not stop a
+        // run from noticing that every wave since has been rejected.
+        let mut wave_filed = 0u64;
+        let mut wave_failed = 0u64;
+
         for (post_id, outcome) in outcomes {
             done += 1;
             match outcome {
                 Ok(outcome) => {
                     let Some(category_id) = by_label.get(outcome.choice.as_str()).copied() else {
+                        wave_failed += 1;
                         report.failed += 1;
                         report.first_error.get_or_insert_with(|| {
                             format!("the provider chose “{}”, which is not a folder", outcome.choice)
@@ -218,11 +238,16 @@ pub fn run(
                         &outcome.model,
                         &hash,
                     )?;
+                    wave_filed += 1;
                     report.filed += 1;
+                    if category_id == categories::UNSORTED_ID {
+                        report.unsorted += 1;
+                    }
                     report.input_tokens += outcome.input_tokens;
                     report.output_tokens += outcome.output_tokens;
                 }
                 Err(e) => {
+                    wave_failed += 1;
                     report.failed += 1;
                     if report.first_error.is_none() {
                         report.first_error = Some(e.to_string());
@@ -232,17 +257,79 @@ pub fn run(
         }
 
         progress(&Progress { done, considered, failed: report.failed });
+        append_log(
+            media_dir,
+            &serde_json::json!({
+                "at": crate::now(),
+                "wave": wave.len(),
+                "done": done,
+                "considered": considered,
+                "filed": report.filed,
+                "failed": report.failed,
+                "error": report.first_error,
+            }),
+        );
 
-        // A wave that fails completely is almost always a bad key or a dead
-        // endpoint; hammering the rest of the library would only multiply the
-        // error and burn quota.
-        if report.filed == 0 && report.failed >= wave.len() as u64 {
+        if wave_filed == 0 && wave_failed > 0 {
+            // A wave that fails completely is a bad key, a dead endpoint, or a
+            // rate limit. The first two will not improve by waiting, so they
+            // stop the run; the third is exactly what waiting fixes.
+            if is_rate_limit(report.first_error.as_deref().unwrap_or("")) && stalls < RATE_STALLS {
+                stalls += 1;
+                report.rate_limited = true;
+                append_log(media_dir, &serde_json::json!({
+                    "at": crate::now(),
+                    "paused_seconds": RATE_PAUSE.as_secs(),
+                    "reason": report.first_error,
+                }));
+                std::thread::sleep(RATE_PAUSE);
+                continue;
+            }
             report.cancelled = true;
             break;
         }
     }
 
+    append_log(
+        media_dir,
+        &serde_json::json!({
+            "at": crate::now(),
+            "end": true,
+            "considered": considered,
+            "filed": report.filed,
+            "unsorted": report.unsorted,
+            "failed": report.failed,
+            "rate_limited": report.rate_limited,
+            "cancelled": report.cancelled,
+            "error": report.first_error,
+        }),
+    );
+
     Ok(report)
+}
+
+/// True when the provider's sentence is about pace rather than permission.
+fn is_rate_limit(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("429")
+        || m.contains("rate limit")
+        || m.contains("rate-limit")
+        || m.contains("too many requests")
+        || m.contains("quota")
+}
+
+/// Append one line to `classify.log` beside the library.
+///
+/// Without it, "it stopped after about 280" is a guess: the report lives in a
+/// webview that the next click replaces. A log makes the next report a fact.
+fn append_log(media_dir: &Path, record: &serde_json::Value) {
+    use std::io::Write;
+    let Some(dir) = media_dir.parent() else { return };
+    if let Ok(mut file) =
+        std::fs::OpenOptions::new().create(true).append(true).open(dir.join("classify.log"))
+    {
+        let _ = writeln!(file, "{record}");
+    }
 }
 
 fn classify_one(
