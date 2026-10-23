@@ -357,10 +357,11 @@ fn inference_save(
     provider: String,
     base_url: String,
     model: String,
+    requests_per_minute: u32,
     key: Option<String>,
     send_images: bool,
 ) -> Result<InferenceView, String> {
-    let config = ProviderConfig { id: provider, base_url, model }
+    let config = ProviderConfig { id: provider, base_url, model, requests_per_minute }
         .validated()
         .map_err(err)?;
 
@@ -483,14 +484,10 @@ fn classify_start(
             // unreachable, the key lapsed or a quota is spent, this fails in
             // seconds with the provider's own words instead of leaving a run
             // to discover it three minutes into the first wave.
-            // Informative, not a gate: if the probe itself is refused for a
-            // reason unrelated to access (a model that does not answer `noul`,
-            // say), refusing to run would turn a diagnostic into a dead
-            // button. A genuinely dead host fails the first wave in seconds.
-            match client.test() {
-                Ok(probe) => crumb(&db_path, &format!("provider ok in {} ms", probe.latency_ms)),
-                Err(e) => crumb(&db_path, &format!("probe failed: {e}")),
-            }
+            // No probe. On a one-request-a-minute account the probe *is* the
+            // minute: pressing Test in Settings and then File 100 meant the
+            // first post arrived inside a window the probe had just spent.
+            // The first post is the probe, and its failure is already on screen.
 
             let report = classify(
                 lib.conn(),

@@ -207,12 +207,17 @@ export interface ProviderPreset {
   label: string;
   baseUrl: string;
   model: string;
+  /** What the provider's free tier actually accepts. */
+  requestsPerMinute: number;
+  /** One line about that pace, shown beside the field. */
+  note: string;
 }
 
 export interface ProviderView {
   id: string;
   baseUrl: string;
   model: string;
+  requestsPerMinute: number;
 }
 
 export interface ClassifyStatus {

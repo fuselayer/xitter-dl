@@ -58,6 +58,13 @@ pub struct Preset {
     pub label: &'static str,
     pub base_url: &'static str,
     pub model: &'static str,
+    /// What the free tier will actually accept, per minute. BeatAPI's free
+    /// model allows one successful request a minute until the account is
+    /// topped up, and firing sixteen at it is how a run looks broken.
+    pub requests_per_minute: u32,
+    /// One line about the pace this provider actually enforces, shown beside
+    /// the field so the number is not a guess.
+    pub note: &'static str,
 }
 
 /// Known providers, in the order they are offered.
@@ -70,24 +77,32 @@ pub const PRESETS: &[Preset] = &[
         label: "BeatAPI",
         base_url: "https://api.beatapi.io/v1",
         model: "jev-1.14-free",
+        requests_per_minute: 1,
+        note: "Free model: 1 request a minute; 10 a minute after a top-up.",
     },
     Preset {
         id: "typesafe",
         label: "TypeSafe",
         base_url: "https://api.typesafe.ai",
         model: "jev-latest",
+        requests_per_minute: 200,
+        note: "Billed per input token; 200 a minute is well inside the limit.",
     },
     Preset {
         id: "opencode",
         label: "OpenCode Zen",
         base_url: "https://opencode.ai/zen",
         model: "jev-1.13-free",
+        requests_per_minute: 200,
+        note: "Free tier is limited; lower this if you see 429s.",
     },
     Preset {
         id: "custom",
         label: "Custom",
         base_url: "",
         model: "",
+        requests_per_minute: 60,
+        note: "Whatever your host allows.",
     },
 ];
 
@@ -100,6 +115,29 @@ pub struct ProviderConfig {
     pub id: String,
     pub base_url: String,
     pub model: String,
+    /// The pace this account is allowed. A setting rather than a constant
+    /// because the same model is one request a minute on a free balance and ten
+    /// after a top-up, and no code can know which of those an account is.
+    #[serde(default = "default_rpm")]
+    pub requests_per_minute: u32,
+}
+
+/// Zero means "the file predates this field": the preset for that provider id
+/// then decides the pace, so an existing BeatAPI config is not left at a speed
+/// its free tier will refuse.
+pub fn default_rpm() -> u32 {
+    0
+}
+
+impl ProviderConfig {
+    /// Fill in a pace that was never written down.
+    pub fn resolve_pace(&mut self) {
+        if self.requests_per_minute == 0 {
+            self.requests_per_minute = Self::preset(self.id.trim())
+                .map(|p| p.requests_per_minute)
+                .unwrap_or(60);
+        }
+    }
 }
 
 impl ProviderConfig {
@@ -108,6 +146,7 @@ impl ProviderConfig {
             id: p.id.to_string(),
             base_url: p.base_url.to_string(),
             model: p.model.to_string(),
+            requests_per_minute: p.requests_per_minute,
         })
     }
 
@@ -121,6 +160,12 @@ impl ProviderConfig {
     pub fn validated(self) -> Result<Self> {
         let base_url = self.base_url.trim().trim_end_matches('/').to_string();
         let model = self.model.trim().to_string();
+        let requests_per_minute = if self.requests_per_minute == 0 {
+            Self::preset(self.id.trim()).map(|p| p.requests_per_minute).unwrap_or(60)
+        } else {
+            self.requests_per_minute
+        }
+        .clamp(1, 6_000);
         if base_url.is_empty() {
             return Err(Error::Invalid("the provider needs a base URL".into()));
         }
@@ -136,6 +181,7 @@ impl ProviderConfig {
             id: if self.id.trim().is_empty() { "custom".into() } else { self.id.trim().to_string() },
             base_url,
             model,
+            requests_per_minute,
         })
     }
 
@@ -576,9 +622,9 @@ mod tests {
 
     #[test]
     fn the_endpoint_is_not_doubled_when_the_base_already_says_v1() {
-        let cfg = ProviderConfig { id: "x".into(), base_url: "https://api.typesafe.ai/v1/".into(), model: "m".into() };
+        let cfg = ProviderConfig { id: "x".into(), base_url: "https://api.typesafe.ai/v1/".into(), model: "m".into(), requests_per_minute: 60 };
         assert_eq!(cfg.endpoint(), "https://api.typesafe.ai/v1/systemone");
-        let cfg = ProviderConfig { id: "x".into(), base_url: "https://opencode.ai/zen".into(), model: "m".into() };
+        let cfg = ProviderConfig { id: "x".into(), base_url: "https://opencode.ai/zen".into(), model: "m".into(), requests_per_minute: 60 };
         assert_eq!(cfg.endpoint(), "https://opencode.ai/zen/v1/systemone");
     }
 }

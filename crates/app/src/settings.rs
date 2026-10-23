@@ -29,10 +29,14 @@ impl Default for Settings {
 }
 
 pub fn load(path: &Path) -> Settings {
-    std::fs::read_to_string(path)
+    let mut settings: Settings = std::fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // A file written before the field existed has no pace in it; fill it from
+    // the preset rather than leaving a one-a-minute account at 60.
+    settings.provider.resolve_pace();
+    settings
 }
 
 pub fn save(path: &Path, settings: &Settings) -> Result<(), String> {

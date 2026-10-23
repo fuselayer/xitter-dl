@@ -26,6 +26,8 @@
   let providerId = $state('');
   let baseUrl = $state('');
   let model = $state('');
+  /** Requests per minute this account may make. Paced against, not guessed at. */
+  let rpm = $state(60);
   let keyDraft = $state('');
   /**
    * Key state of the *selected* provider.
@@ -62,6 +64,7 @@
         providerId = v.provider.id;
         baseUrl = v.provider.baseUrl;
         model = v.provider.model;
+        rpm = v.provider.requestsPerMinute;
         sendImages = v.sendImages;
       })
       .catch((e) => alive && (error = String(e)));
@@ -95,6 +98,7 @@
     // wrong endpoint and conclude the key is broken.
     if (p.baseUrl) baseUrl = p.baseUrl;
     if (p.model) model = p.model;
+    rpm = p.requestsPerMinute;
     test = null;
     testError = null;
   }
@@ -105,7 +109,7 @@
     error = null;
     try {
       const key = clearKey ? '' : keyDraft.trim() ? keyDraft.trim() : null;
-      const next = await api.inferenceSave(providerId, baseUrl, model, key, sendImages);
+      const next = await api.inferenceSave(providerId, baseUrl, model, rpm, key, sendImages);
       view = next;
       keyState = { hasKey: next.hasKey, hint: next.keyHint };
       keyDraft = '';
@@ -183,6 +187,14 @@
         <label class="field">
           <span>Model</span>
           <input bind:value={model} spellcheck="false" placeholder="jev-latest" />
+        </label>
+
+        <label class="field">
+          <span>Requests per minute</span>
+          <input type="number" min="1" max="6000" step="1" bind:value={rpm} />
+          <span class="muted">
+            {preset?.note ?? 'The run waits between requests to stay under this.'}
+          </span>
         </label>
 
         <label class="field">

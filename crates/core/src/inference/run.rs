@@ -43,7 +43,11 @@ const WAVES_PER_WORKER: usize = 4;
 /// Waiting is the difference between a run that files 190 posts and one that
 /// files 190 posts and then apologises.
 const RATE_STALLS: u32 = 3;
-const RATE_PAUSE: Duration = Duration::from_secs(30);
+const RATE_PAUSE: Duration = Duration::from_secs(60);
+/// The pause is spent in ticks so the panel can count it down — and so Stop
+/// works while the run is waiting, which is when a person is most likely to
+/// press it.
+const PAUSE_TICK: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct RunOptions {
@@ -90,6 +94,9 @@ pub struct Progress {
     pub done: u64,
     pub considered: u64,
     pub failed: u64,
+    /// The provider's words for the first failure, or what the run is waiting
+    /// on. A counter that rises while nothing explains it reads as a freeze.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -183,42 +190,7 @@ pub fn run(
             report.cancelled = true;
             break;
         }
-        let outcomes: Vec<(String, Result<Outcome>)> = std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(workers);
-            for worker in 0..workers {
-                let slice: Vec<&Candidate> = wave.iter().skip(worker).step_by(workers).collect();
-                if slice.is_empty() {
-                    continue;
-                }
-                handles.push(scope.spawn(move || {
-                    let mut done = Vec::with_capacity(slice.len());
-                    for cand in slice {
-                        // Stopping is worth checking here too: a wave is sixteen
-                        // requests, and making the user wait for all of them
-                        // after pressing Stop is not stopping.
-                        if cancel.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        done.push((
-                            cand.id.clone(),
-                            classify_one(client, media_dir, cand, &criteria, opts.send_images),
-                        ));
-                    }
-                    done
-                }));
-            }
-            handles
-                .into_iter()
-                .flat_map(|h| {
-                    h.join().unwrap_or_else(|_| {
-                        vec![(String::new(), Err(Error::Network("a worker panicked".into())))]
-                    })
-                })
-                .collect::<Vec<(String, Result<Outcome>)>>()
-        });
 
-        // Per-wave, not cumulative: "the first wave worked" must not stop a
-        // run from noticing that every wave since has been rejected.
         let mut wave_filed = 0u64;
         let mut wave_failed = 0u64;
 
@@ -227,61 +199,112 @@ pub fn run(
             &serde_json::json!({ "at": crate::now(), "wave": wave.len(), "begin": true }),
         );
 
-        for (post_id, outcome) in outcomes {
-            done += 1;
-            match outcome {
-                Ok(outcome) => {
-                    let Some(category_id) = by_label.get(outcome.choice.as_str()).copied() else {
-                        wave_failed += 1;
-                        report.failed += 1;
-                        report.first_error.get_or_insert_with(|| {
-                            format!("the provider chose “{}”, which is not a folder", outcome.choice)
-                        });
+        // Results stream back over a channel and are written on this thread as
+        // they arrive. Collecting a whole wave first would make the panel wait
+        // for the *last* post of sixteen — which on a one-a-minute account is a
+        // quarter of an hour of a bar that has not moved.
+        {
+            // A write can fail (disk, lock, a folder deleted mid-run). Capture
+            // it, stop consuming, and let the scope join before returning it:
+            // `?` is not available inside a thread-scope closure.
+            let mut write_error: Option<Error> = None;
+            let (tx, rx) = std::sync::mpsc::channel::<(String, Result<Outcome>)>();
+            std::thread::scope(|scope| {
+                for worker in 0..workers {
+                    let slice: Vec<&Candidate> =
+                        wave.iter().skip(worker).step_by(workers).collect();
+                    if slice.is_empty() {
                         continue;
-                    };
-                    categories::file(
-                        conn,
-                        &post_id,
-                        category_id,
-                        Some(outcome.confidence),
-                        outcome.score,
-                        &outcome.model,
-                        &hash,
-                    )?;
-                    wave_filed += 1;
-                    report.filed += 1;
-                    if category_id == categories::UNSORTED_ID {
-                        report.unsorted += 1;
                     }
-                    report.input_tokens += outcome.input_tokens;
-                    report.output_tokens += outcome.output_tokens;
+                    let tx = tx.clone();
+                    scope.spawn(move || {
+                        for cand in slice {
+                            if cancel.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            let outcome =
+                                classify_one(client, media_dir, cand, &criteria, opts.send_images);
+                            if tx.send((cand.id.clone(), outcome)).is_err() {
+                                break;
+                            }
+                        }
+                    });
                 }
-                Err(e) => {
-                    wave_failed += 1;
-                    report.failed += 1;
-                    let message = e.to_string();
-                    append_log(
-                        media_dir,
-                        &serde_json::json!({
-                            "at": crate::now(),
-                            "post": post_id,
-                            "error": message.chars().take(300).collect::<String>(),
-                        }),
-                    );
-                    if report.first_error.is_none() {
-                        report.first_error = Some(message);
+                drop(tx);
+
+                for (post_id, outcome) in rx {
+                    done += 1;
+                    match outcome {
+                        Ok(outcome) => {
+                            let Some(category_id) =
+                                by_label.get(outcome.choice.as_str()).copied()
+                            else {
+                                wave_failed += 1;
+                                report.failed += 1;
+                                report.first_error.get_or_insert_with(|| {
+                                    format!(
+                                        "the provider chose “{}”, which is not a folder",
+                                        outcome.choice
+                                    )
+                                });
+                                progress(&Progress {
+                                    done,
+                                    considered,
+                                    failed: report.failed,
+                                    message: report.first_error.clone(),
+                                });
+                                continue;
+                            };
+                            if let Err(e) = categories::file(
+                                conn,
+                                &post_id,
+                                category_id,
+                                Some(outcome.confidence),
+                                outcome.score,
+                                &outcome.model,
+                                &hash,
+                            ) {
+                                write_error = Some(e);
+                                break;
+                            }
+                            wave_filed += 1;
+                            report.filed += 1;
+                            if category_id == categories::UNSORTED_ID {
+                                report.unsorted += 1;
+                            }
+                            report.input_tokens += outcome.input_tokens;
+                            report.output_tokens += outcome.output_tokens;
+                        }
+                        Err(e) => {
+                            wave_failed += 1;
+                            report.failed += 1;
+                            let message = e.to_string();
+                            append_log(
+                                media_dir,
+                                &serde_json::json!({
+                                    "at": crate::now(),
+                                    "post": post_id,
+                                    "error": message.chars().take(300).collect::<String>(),
+                                }),
+                            );
+                            if report.first_error.is_none() {
+                                report.first_error = Some(message);
+                            }
+                        }
                     }
+                    progress(&Progress {
+                        done,
+                        considered,
+                        failed: report.failed,
+                        message: report.first_error.clone(),
+                    });
                 }
+            });
+            if let Some(e) = write_error {
+                return Err(e);
             }
-            // One event per post, not per wave. A wave is sixteen requests, and
-            // silence for sixteen of them is exactly what "it froze" looks like.
-            progress(&Progress { done, considered, failed: report.failed });
         }
 
-        if cancel.load(Ordering::Relaxed) {
-            report.cancelled = true;
-            break;
-        }
         append_log(
             media_dir,
             &serde_json::json!({
@@ -295,6 +318,11 @@ pub fn run(
             }),
         );
 
+        if cancel.load(Ordering::Relaxed) {
+            report.cancelled = true;
+            break;
+        }
+
         if wave_filed == 0 && wave_failed > 0 {
             // A wave that fails completely is a bad key, a dead endpoint, or a
             // rate limit. The first two will not improve by waiting, so they
@@ -307,7 +335,30 @@ pub fn run(
                     "paused_seconds": RATE_PAUSE.as_secs(),
                     "reason": report.first_error,
                 }));
-                std::thread::sleep(RATE_PAUSE);
+                let reason = report.first_error.clone().unwrap_or_default();
+                let mut waited = 0u64;
+                while waited < RATE_PAUSE.as_secs() {
+                    if cancel.load(Ordering::Relaxed) {
+                        report.cancelled = true;
+                        break;
+                    }
+                    let left = RATE_PAUSE.as_secs() - waited;
+                    progress(&Progress {
+                        done,
+                        considered,
+                        failed: report.failed,
+                        message: Some(if waited == 0 {
+                            format!("{reason} — retrying in {left}s")
+                        } else {
+                            format!("Retrying in {left}s")
+                        }),
+                    });
+                    std::thread::sleep(PAUSE_TICK);
+                    waited += PAUSE_TICK.as_secs();
+                }
+                if report.cancelled {
+                    break;
+                }
                 continue;
             }
             report.cancelled = true;

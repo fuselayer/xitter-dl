@@ -26,13 +26,13 @@ const MAX_ATTEMPTS: u32 = 4;
 /// the post up next time. A rate-limit window can be a minute, though, so this
 /// has to outlast a `Retry-After` that is worth obeying.
 const MAX_WAIT: Duration = Duration::from_secs(60);
-/// The gap between request *starts*, shared by every worker.
+/// The floor on the gap between request starts.
 ///
-/// Four workers with no gate put ~200 requests into the first twenty seconds of
-/// a run; the free tier's per-minute window closes, every retry lands inside it,
-/// and the run looks like it died. 320 ms is about 190 a minute — under the
-/// window, and still faster than reading.
-const MIN_INTERVAL: Duration = Duration::from_millis(320);
+/// The real gap comes from `ProviderConfig::requests_per_minute`, because the
+/// same endpoint is one request a minute on a free balance and ten after a
+/// top-up. This is only here so a misconfigured 6,000/min cannot become a busy
+/// loop.
+const MIN_INTERVAL: Duration = Duration::from_millis(10);
 
 /// The longest a single post waits inside the client for a rate limit to
 /// clear. The run's own pause handles the real window.
@@ -44,6 +44,8 @@ pub struct Client {
     config: ProviderConfig,
     /// Start time of the last request, shared across the run's workers.
     gate: std::sync::Mutex<Option<Instant>>,
+    /// The gap the account is entitled to, from `requests_per_minute`.
+    interval: Duration,
 }
 
 /// Why a call did not produce an answer, split by whether trying again could
@@ -63,14 +65,17 @@ impl Client {
             .timeout(Duration::from_secs(120))
             .user_agent(USER_AGENT)
             .build();
-        Self { agent, key, config, gate: std::sync::Mutex::new(None) }
+        let per_minute = u64::from(config.requests_per_minute.max(1));
+        let interval =
+            Duration::from_millis((60_000 / per_minute).max(1)).max(MIN_INTERVAL);
+        Self { agent, key, config, gate: std::sync::Mutex::new(None), interval }
     }
 
     pub fn config(&self) -> &ProviderConfig {
         &self.config
     }
 
-    /// Hold every worker to one request per [`MIN_INTERVAL`].
+    /// Hold every worker to one request per the configured interval.
     ///
     /// The lock is held across the sleep on purpose: this is a queue of one,
     /// and letting four workers each compute the same wait from the same start
@@ -78,7 +83,7 @@ impl Client {
     fn pace(&self) {
         let mut last = self.gate.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(previous) = *last {
-            let wait = MIN_INTERVAL.saturating_sub(previous.elapsed());
+            let wait = self.interval.saturating_sub(previous.elapsed());
             if !wait.is_zero() {
                 std::thread::sleep(wait);
             }

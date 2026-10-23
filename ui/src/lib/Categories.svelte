@@ -251,6 +251,20 @@
     cats.filter((c) => c.id !== 'unsorted' && !c.criteria.trim()).length,
   );
 
+  /** The pace the saved provider is allowed. */
+  const rpm = $derived(Math.max(1, infer?.provider.requestsPerMinute ?? 60));
+
+  /** Humanised run time at that pace, so a 1/minute account is not a surprise. */
+  const howLong = $derived.by(() => {
+    const seconds = Math.round((take * 60) / rpm);
+    if (seconds < 90) return `${seconds}s`;
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 90) return `${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return rest ? `${hours}h ${rest}m` : `${hours}h`;
+  });
+
   /** What this run would actually send: the cap, or what is left. */
   const take = $derived(
     infer ? Math.min(cap ?? infer.status.pending, infer.status.pending) : 0,
@@ -619,8 +633,14 @@
       <div class="bar" aria-hidden="true"><span style="width: {pct}%"></span></div>
       <div class="runrow">
         <span class="count">
-          {progress ? `${progress.done} of ${progress.considered}` : 'starting…'}
-          {#if progress && progress.failed > 0}· {progress.failed} failed{/if}
+          {#if progress}
+            <span class="good">{progress.done - progress.failed} filed</span>
+            /
+            <span class:bad={progress.failed > 0}>{progress.failed} failed</span>
+            <span class="of">of {progress.considered}</span>
+          {:else}
+            starting…
+          {/if}
         </span>
         <button class="stop" onclick={stopClassify} disabled={stopping}>
           {stopping ? 'Stopping…' : 'Stop'}
@@ -649,6 +669,11 @@
           <button class="run quiet" onclick={() => startClassify(true)}>Re-file everything</button>
         {/if}
       </div>
+      {#if infer.status.pending > 0 && take > 0}
+        <p class="hint">
+          ≈ {howLong} for {take} post{take === 1 ? '' : 's'} at {rpm}/min
+        </p>
+      {/if}
       {#if infer.status.pending > 0 && undefinedFolders > 0}
         <p class="hint">
           {undefinedFolders} folder{undefinedFolders === 1 ? ' has' : 's have'} no definition — JEV
@@ -965,6 +990,18 @@
     font-size: 12px;
     width: 66px;
     text-align: center;
+  }
+
+  .count .good {
+    color: var(--text-primary);
+  }
+
+  .count .bad {
+    color: var(--accent);
+  }
+
+  .count .of {
+    color: var(--text-secondary);
   }
 
   .run.quiet {

@@ -260,10 +260,18 @@ export async function inferenceSave(
   provider: string,
   baseUrl: string,
   model: string,
+  requestsPerMinute: number,
   key: string | null,
   sendImages: boolean,
 ): Promise<InferenceView> {
-  return invoke<InferenceView>('inference_save', { provider, baseUrl, model, key, sendImages });
+  return invoke<InferenceView>('inference_save', {
+    provider,
+    baseUrl,
+    model,
+    requestsPerMinute,
+    key,
+    sendImages,
+  });
 }
 
 /** One round-trip on a throwaway sentence; proves host, model and key at once. */
