@@ -64,7 +64,7 @@ open the same file.
 ## Setting up capture
 
 1. Start the app. The left rail shows the connection state.
-2. Install [`userscript/xitter-dl-capture.user.js`](https://raw.githubusercontent.com/fuselayer/local-x-bookmarks/main/userscript/xitter-dl-capture.user.js)
+2. Install [`userscript/xitter-dl-capture.user.js`](https://raw.githubusercontent.com/fuselayer/xitter-dl/main/userscript/xitter-dl-capture.user.js)
    in Tampermonkey or Violentmonkey. Install it from the raw URL rather than
    pasting the file: Tampermonkey reads `@updateURL` from the copy it already
    has, so a pasted script never updates itself.

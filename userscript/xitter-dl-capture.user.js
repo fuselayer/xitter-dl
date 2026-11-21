@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         xitter-dl capture
 // @namespace    https://github.com/example/xitter-dl
-// @version      0.4.3
+// @version      0.4.4
 // @description  Files away the bookmarks X already sent your browser, pictures included. No API.
 // @author       xitter-dl
 // @match        https://x.com/*
@@ -15,8 +15,8 @@
 // @connect      127.0.0.1
 // @connect      localhost
 // @connect      pbs.twimg.com
-// @updateURL    https://raw.githubusercontent.com/fuselayer/local-x-bookmarks/main/userscript/xitter-dl-capture.user.js
-// @downloadURL  https://raw.githubusercontent.com/fuselayer/local-x-bookmarks/main/userscript/xitter-dl-capture.user.js
+// @updateURL    https://raw.githubusercontent.com/fuselayer/xitter-dl/main/userscript/xitter-dl-capture.user.js
+// @downloadURL  https://raw.githubusercontent.com/fuselayer/xitter-dl/main/userscript/xitter-dl-capture.user.js
 // ==/UserScript==
 
 /*
